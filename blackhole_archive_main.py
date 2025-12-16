@@ -238,9 +238,12 @@ class SimplifiedSpacetime:
         return metric
     
     def get_curvature(self, position: np.ndarray) -> float:
-        """Get Ricci scalar at position"""
+        """Get Ricci scalar at position using Kretschmann scalar."""
         r = position[1]
-        return 0.0 if r > self.r_s else 1e10  # Simplified
+
+        # Kretschmann scalar K = 48M²/r⁶ gives a smooth curvature gradient
+        K = 48 * self.M ** 2 / (r ** 6 + 1e-10)
+        return np.sqrt(K)
     
     def get_time_dilation(self, position: np.ndarray) -> float:
         """Get time dilation factor"""
@@ -287,18 +290,30 @@ class Agent:
 
 class BeaverAgent(Agent):
     """Beaver: builds structures"""
-    
+
     def update(self, dt: float, spacetime: SimplifiedSpacetime):
-        # Check if high curvature
-        curvature = spacetime.get_curvature(self.position)
-        
-        if curvature > 0.5 and self.energy > 0.1:
-            # Build structure
+        # Sample nearby points to climb curvature gradients
+        nearby_curvatures = []
+        directions = []
+        for _ in range(5):
+            offset = 0.5 * np.random.randn(4)
+            test_pos = self.position + offset
+            nearby_curvatures.append(spacetime.get_curvature(test_pos))
+            directions.append(offset)
+
+        max_idx = int(np.argmax(nearby_curvatures))
+        target_dir = directions[max_idx]
+        target_curv = nearby_curvatures[max_idx]
+
+        # Drift toward the highest curvature region we sampled
+        self.velocity = 0.8 * self.velocity + 0.2 * target_dir
+
+        if target_curv > 0.1 and self.energy > 0.05:
             spacetime.add_structural_field(self.position, 1.0, 2.0)
-            self.energy -= 0.1
-        
-        # Random walk
-        self.position += dt * self.velocity + 0.1 * np.random.randn(4)
+            self.energy -= 0.05
+
+        # Move and expend energy
+        self.position += dt * self.velocity + 0.05 * np.random.randn(4)
         self.energy -= dt * 0.01
 
 class AntAgent(Agent):
@@ -320,21 +335,37 @@ class AntAgent(Agent):
 
 class BeeAgent(Agent):
     """Bee: transports packets"""
-    
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.packet = None
         self.waggle_intensity = 0.0
-    
-    def update(self, dt: float, spacetime: SimplifiedSpacetime):
+        self.role = "scout"
+
+    def update(
+        self,
+        dt: float,
+        spacetime: SimplifiedSpacetime,
+        wormhole_position: Optional[np.ndarray] = None,
+    ):
         if self.packet is None:
-            # Search for packets
+            # Search for payloads
             if np.random.rand() < 0.01:
-                self.waggle_intensity = 0.8
+                self.packet = {
+                    "vertex": -1,
+                    "salience": float(self.waggle_intensity),
+                    "observation": "scouted_payload",
+                }
+                self.role = "transporter"
+                self.waggle_intensity = 0.5
         else:
-            # Transport to wormhole
-            self.velocity[1] = -0.5  # Move inward
-        
+            # Move toward the wormhole mouth for delivery
+            if wormhole_position is not None:
+                direction = wormhole_position - self.position
+                direction[0] = 0.0  # ignore time component
+                norm = np.linalg.norm(direction) + 1e-8
+                self.velocity = 0.7 * self.velocity + 0.3 * (direction / norm)
+
         self.position += dt * self.velocity
         self.energy -= dt * 0.01
 
@@ -349,19 +380,24 @@ class SimulationEngine:
         self.config = config
         self.logger = Logger(config)
         self.data_manager = DataManager(config)
-        
+
         # Initialize components
         self.logger.info("Initializing spacetime...")
         self.spacetime = SimplifiedSpacetime(config)
-        
+
+        throat_area = 4 * np.pi * (config.throat_radius ** 2)
+        self.transport_protocol = WormholeTransportProtocol(throat_area=throat_area)
+        self.wormhole_position = np.array([0.0, config.throat_radius + 0.6, np.pi / 2, 0.0])
+
         self.logger.info("Initializing agents...")
         self.agents = self._initialize_agents()
-        
+
         # Statistics
         self.stats = {
             'n_packets_transported': 0,
             'total_energy': 0.0,
-            'n_structures_built': 0
+            'n_structures_built': 0,
+            'queue_length': 0,
         }
         
         self.logger.info("Simulation engine initialized")
@@ -435,17 +471,34 @@ class SimulationEngine:
         
         for step in tqdm(range(n_steps), desc="Simulation"):
             t = step * self.config.dt
-            
+
             # Update all agents
             for colony_name, agent_list in self.agents.items():
                 for agent in agent_list:
                     if agent.state == "active":
-                        agent.update(self.config.dt, self.spacetime)
-                        
+                        if isinstance(agent, BeeAgent):
+                            agent.update(self.config.dt, self.spacetime, self.wormhole_position)
+                            if agent.packet is not None and self._at_wormhole(agent.position):
+                                packet = self._build_packet(agent, t)
+                                if self.transport_protocol.enqueue_packet(packet):
+                                    agent.packet = None
+                                    agent.role = "scout"
+                                    self.stats['n_packets_transported'] += 1
+                                else:
+                                    agent.role = "congestion_wait"
+                            elif getattr(agent, 'role', '') == "congestion_wait" and not self.transport_protocol.channel_state.packet_queue:
+                                agent.role = "transporter"
+                        else:
+                            agent.update(self.config.dt, self.spacetime)
+
                         # Remove dead agents
                         if agent.energy <= 0:
                             agent.state = "dead"
-            
+
+            # Protocol tick
+            self.transport_protocol.transmit_packets(self.config.dt)
+            self.stats['queue_length'] = len(self.transport_protocol.channel_state.packet_queue)
+
             # Update statistics
             self.stats['total_energy'] = sum(
                 a.energy for agents in self.agents.values() for a in agents if a.state == "active"
@@ -579,6 +632,8 @@ class ProductionSimulationEngine(SimulationEngine):
         spatial_delta = position[1:] - self.wormhole_position[1:]
         return np.linalg.norm(spatial_delta) < 2.0
 
+    def _build_packet(self, bee: Agent, current_time: float) -> Packet:
+        """Wrap a bee payload in the transport protocol packet structure."""
     def _build_packet(self, bee: EnhancedBeeAgent, current_time: float) -> Packet:
         """Wrap bee payload in the transport protocol packet structure."""
         payload = bee.packet or {}
@@ -593,6 +648,7 @@ class ProductionSimulationEngine(SimulationEngine):
 
         entropy_signature = EntropySignature(
             total_entropy=float(len(payload_bytes)),
+            local_curvature=float(self.spacetime.get_curvature(bee.position)),
             local_curvature=float(self.spacetime.get_ricci_scalar(bee.position)),
             temperature=0.0,
             checksum=hashlib.sha256(payload_bytes).hexdigest(),
@@ -759,13 +815,16 @@ class Visualizer:
 def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(description="Blackhole Archive Simulation")
-    parser.add_argument('--mode', type=str, default='demo', 
+    parser.add_argument('--mode', type=str, default='demo',
                        choices=['demo', 'full', 'test'],
                        help='Simulation mode')
     parser.add_argument('--output', type=str, default='./blackhole_archive_output',
                        help='Output directory')
     parser.add_argument('--config', type=str, default=None,
                        help='Path to config JSON file')
+    parser.add_argument('--engine', type=str, default='production',
+                        choices=['simplified', 'production'],
+                        help='Select simulation engine implementation')
     
     args = parser.parse_args()
     
@@ -796,7 +855,8 @@ def main():
             config.n_phi = 8
     
     # Create and run simulation
-    engine = SimulationEngine(config)
+    engine_cls = ProductionSimulationEngine if args.engine == 'production' else SimulationEngine
+    engine = engine_cls(config)
     engine.run()
     
     # Visualize
