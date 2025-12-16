@@ -41,6 +41,7 @@ import h5py
 import json
 import argparse
 import logging
+import hashlib
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass, field, asdict
@@ -50,6 +51,22 @@ from tqdm import tqdm
 import asyncio
 from concurrent.futures import ProcessPoolExecutor
 import uuid
+
+from blackhole_archive_enhanced import (
+    EnhancedSpacetime,
+    EnhancedBeaverAgent,
+    EnhancedAntAgent,
+    EnhancedBeeAgent,
+    SemanticGraph,
+)
+from blackhole_archive_protocols import (
+    WormholeTransportProtocol,
+    Packet,
+    PacketType,
+    SemanticCoordinate,
+    EntropySignature,
+    CausalCertificate,
+)
 
 # =============================================================================
 # CONFIGURATION
@@ -413,7 +430,7 @@ class SimulationEngine:
     def run(self):
         """Run simulation"""
         self.logger.info(f"Starting simulation: {int(self.config.t_max / self.config.dt)} steps")
-        
+
         n_steps = int(self.config.t_max / self.config.dt)
         
         for step in tqdm(range(n_steps), desc="Simulation"):
@@ -444,24 +461,24 @@ class SimulationEngine:
         
         self.logger.info("Simulation complete")
         self._save_final_results()
-    
+
     def _save_checkpoint(self, step: int):
         """Save simulation checkpoint"""
         # Save spacetime
         metric_sample = self.spacetime.g[::8, ::8, ::8]  # Downsample for storage
         fields = {'structural_field': self.spacetime.structural_field[::8, ::8, ::8]}
         self.data_manager.save_spacetime_state(step, metric_sample, fields)
-        
+
         # Save agents
         self.data_manager.save_agent_states(step, self.agents)
-        
+
         # Save statistics
         self.data_manager.save_statistics(step, self.stats)
-    
+
     def _save_final_results(self):
         """Save final results and generate report"""
         report_path = Path(self.config.output_dir) / "simulation_report.json"
-        
+
         report = {
             'config': asdict(self.config),
             'final_statistics': self.stats,
@@ -470,11 +487,199 @@ class SimulationEngine:
                 for colony, agents in self.agents.items()
             }
         }
-        
+
         with open(report_path, 'w') as f:
             json.dump(report, f, indent=2)
-        
+
         self.logger.info(f"Report saved to {report_path}")
+
+
+class ProductionSimulationEngine(SimulationEngine):
+    """Simulation engine that bridges enhanced physics and protocols."""
+
+    def __init__(self, config: SimulationConfig):
+        # Initialize logging/data pipelines from the base engine
+        super().__init__(config)
+
+        # Replace simplified spacetime with enhanced physics
+        self.spacetime = EnhancedSpacetime(config)
+        self.semantic_graph = SemanticGraph()
+
+        # Enhanced wormhole transport protocol honoring holographic bounds
+        throat_area = 4 * np.pi * (config.throat_radius ** 2)
+        self.transport_protocol = WormholeTransportProtocol(throat_area=throat_area)
+
+        # Wormhole location (near throat)
+        self.wormhole_position = np.array([0.0, config.throat_radius + 0.6, np.pi / 2, 0.0])
+
+        # Reinitialize agents with enhanced behaviors
+        self.agents = self._initialize_agents()
+
+        # Expanded stats
+        self.stats.update({
+            'n_vertices': 0,
+            'n_edges': 0,
+            'n_packets_transported': 0,
+            'queue_length': 0,
+        })
+
+    def _initialize_agents(self) -> Dict[str, List[Agent]]:
+        """Initialize enhanced agents that leverage curvature gradients."""
+        agents = {'beavers': [], 'ants': [], 'bees': []}
+
+        for i in range(self.config.n_beavers):
+            position = np.array([
+                0.0,
+                self.config.r_min + np.random.rand() * 10,
+                np.random.rand() * np.pi,
+                np.random.rand() * 2 * np.pi,
+            ])
+            agents['beavers'].append(EnhancedBeaverAgent(
+                id=f"beaver_{i}",
+                colony="beavers",
+                position=position,
+                velocity=0.1 * np.random.randn(4),
+                energy=1.0,
+            ))
+
+        for i in range(self.config.n_ants):
+            position = np.array([
+                0.0,
+                self.config.r_min + np.random.rand() * 20,
+                np.random.rand() * np.pi,
+                np.random.rand() * 2 * np.pi,
+            ])
+            agents['ants'].append(EnhancedAntAgent(
+                id=f"ant_{i}",
+                colony="ants",
+                position=position,
+                velocity=0.05 * np.random.randn(4),
+                energy=1.0,
+            ))
+
+        for i in range(self.config.n_bees):
+            position = np.array([
+                0.0,
+                self.config.r_min + np.random.rand() * 15,
+                np.random.rand() * np.pi,
+                np.random.rand() * 2 * np.pi,
+            ])
+            agents['bees'].append(EnhancedBeeAgent(
+                id=f"bee_{i}",
+                colony="bees",
+                position=position,
+                velocity=0.2 * np.random.randn(4),
+                energy=1.0,
+            ))
+
+        return agents
+
+    def _at_wormhole(self, position: np.ndarray) -> bool:
+        """Check proximity to wormhole mouth."""
+        spatial_delta = position[1:] - self.wormhole_position[1:]
+        return np.linalg.norm(spatial_delta) < 2.0
+
+    def _build_packet(self, bee: EnhancedBeeAgent, current_time: float) -> Packet:
+        """Wrap bee payload in the transport protocol packet structure."""
+        payload = bee.packet or {}
+        payload_bytes = json.dumps(payload).encode('utf-8')
+
+        semantic_coord = SemanticCoordinate(
+            vertex_id=payload.get('vertex', -1),
+            embedding=np.zeros(4),
+            salience=float(payload.get('salience', 0.0)),
+            confidence=1.0,
+        )
+
+        entropy_signature = EntropySignature(
+            total_entropy=float(len(payload_bytes)),
+            local_curvature=float(self.spacetime.get_ricci_scalar(bee.position)),
+            temperature=0.0,
+            checksum=hashlib.sha256(payload_bytes).hexdigest(),
+        )
+
+        causal_cert = CausalCertificate()
+        causal_cert.increment(bee.id)
+
+        return Packet(
+            packet_id=str(uuid.uuid4()),
+            packet_type=PacketType.DATA,
+            data=payload_bytes,
+            semantic_coord=semantic_coord,
+            entropy_signature=entropy_signature,
+            causal_cert=causal_cert,
+            origin_time=current_time,
+            origin_position=bee.position.copy(),
+            priority=float(getattr(bee, 'waggle_intensity', 0.0)),
+            size_bytes=len(payload_bytes),
+            created_at=current_time,
+            error_correction_code=None,
+        )
+
+    def run(self):
+        """Run simulation with enhanced physics and wormhole protocol."""
+        self.logger.info(f"Starting production simulation: {int(self.config.t_max / self.config.dt)} steps")
+
+        n_steps = int(self.config.t_max / self.config.dt)
+
+        for step in tqdm(range(n_steps), desc="Production Simulation"):
+            t = step * self.config.dt
+
+            # Update beavers using real curvature gradients
+            for beaver in self.agents['beavers']:
+                if beaver.state == "active":
+                    beaver.update(self.config.dt, self.spacetime)
+
+            # Ants evolve the semantic graph
+            for ant in self.agents['ants']:
+                if ant.state == "active":
+                    ant.update(self.config.dt, self.spacetime, self.semantic_graph)
+
+            # Bees interact with wormhole protocol instead of naive teleport
+            for bee in self.agents['bees']:
+                if bee.state == "active":
+                    bee.update(self.config.dt, self.spacetime, self.semantic_graph, self.wormhole_position)
+
+                    if bee.role == "transporter" and bee.packet is not None and self._at_wormhole(bee.position):
+                        packet = self._build_packet(bee, t)
+                        if self.transport_protocol.enqueue_packet(packet):
+                            bee.packet = None
+                            bee.target_vertex = None
+                            bee.role = "scout"
+                            self.stats['n_packets_transported'] += 1
+                        else:
+                            bee.role = "congestion_wait"
+                    elif bee.role == "congestion_wait" and not self.transport_protocol.channel_state.packet_queue:
+                        bee.role = "transporter"
+
+            # Transport protocol tick
+            self.transport_protocol.transmit_packets(self.config.dt)
+            self.stats['queue_length'] = len(self.transport_protocol.channel_state.packet_queue)
+
+            # Decay pheromones and update stats
+            self.semantic_graph.decay_pheromones(self.config.dt)
+
+            self.stats['total_energy'] = sum(
+                a.energy for agents in self.agents.values() for a in agents if a.state == "active"
+            )
+            self.stats['n_structures_built'] = sum(
+                b.structures_built for b in self.agents['beavers']
+            )
+            self.stats['n_vertices'] = self.semantic_graph.graph.number_of_nodes()
+            self.stats['n_edges'] = self.semantic_graph.graph.number_of_edges()
+
+            if step % 100 == 0:
+                self.logger.info(
+                    f"Step {step}/{n_steps}, t={t:.2f}, "
+                    f"Energy={self.stats['total_energy']:.2f}, "
+                    f"Vertices={self.stats['n_vertices']}, "
+                    f"Structures={self.stats['n_structures_built']}, "
+                    f"Packets={self.stats['n_packets_transported']}, "
+                    f"Queue={self.stats['queue_length']}"
+                )
+
+        self.logger.info("Production simulation complete")
+        self._save_final_results()
 
 # =============================================================================
 # VISUALIZATION
