@@ -634,6 +634,8 @@ class ProductionSimulationEngine(SimulationEngine):
 
     def _build_packet(self, bee: Agent, current_time: float) -> Packet:
         """Wrap a bee payload in the transport protocol packet structure."""
+    def _build_packet(self, bee: EnhancedBeeAgent, current_time: float) -> Packet:
+        """Wrap bee payload in the transport protocol packet structure."""
         payload = bee.packet or {}
         payload_bytes = json.dumps(payload).encode('utf-8')
 
@@ -647,6 +649,7 @@ class ProductionSimulationEngine(SimulationEngine):
         entropy_signature = EntropySignature(
             total_entropy=float(len(payload_bytes)),
             local_curvature=float(self.spacetime.get_curvature(bee.position)),
+            local_curvature=float(self.spacetime.get_ricci_scalar(bee.position)),
             temperature=0.0,
             checksum=hashlib.sha256(payload_bytes).hexdigest(),
         )

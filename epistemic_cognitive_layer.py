@@ -189,7 +189,8 @@ class EpistemicSemanticGraph:
             belief=belief,
             salience=salience,  # NEEDED for bees
             mean=belief.mean,
-            confidence=belief.confidence
+            confidence=belief.confidence,
+            position=belief.mean  # ALIAS for EnhancedBeeAgent compatibility
         )
         
         return vertex_id
@@ -202,6 +203,8 @@ class EpistemicSemanticGraph:
             # Update graph node attributes
             self.graph.nodes[vertex_id]['confidence'] = b.confidence
             self.graph.nodes[vertex_id]['salience'] = b.salience
+            self.graph.nodes[vertex_id]['mean'] = b.mean
+            self.graph.nodes[vertex_id]['position'] = b.mean  # Keep in sync
     
     def detect_contradictions(self, threshold: float = 2.0, max_pairs: int = 1000):
         """
@@ -421,11 +424,13 @@ class Overmind:
         
         # Stability metric: how much is changing
         # Low when system is static
-        if len(self.history['entropy']) > 0:
+        if len(self.history['entropy']) > 0 and total_entropy > 0:
             entropy_change = abs(total_entropy - self.history['entropy'][-1])
-            stability = 1.0 / (1.0 + entropy_change)
+            # Normalized by current entropy to avoid scale issues
+            normalized_change = entropy_change / (total_entropy + 1e-6)
+            stability = 1.0 / (1.0 + normalized_change)
         else:
-            stability = 0.5
+            stability = 0.5  # Neutral at start
         
         # Track history
         self.history['entropy'].append(total_entropy)
@@ -535,11 +540,19 @@ class Overmind:
     
     def should_inject_noise(self) -> bool:
         """Inject random perturbations when too stable"""
-        if len(self.history['stability']) < 10:
+        # Need sufficient history and sufficient entropy variance
+        if len(self.history['stability']) < 50:  # Increased from 10
+            return False
+        
+        # Only inject if system has settled (not just starting)
+        if len(self.history['entropy']) < 50:
             return False
         
         recent_stability = np.mean(self.history['stability'][-10:])
-        return recent_stability > 0.9
+        recent_entropy_var = np.var(self.history['entropy'][-20:])
+        
+        # Inject if very stable AND low entropy variation
+        return recent_stability > 0.95 and recent_entropy_var < 1.0
 
 
 # =============================================================================
