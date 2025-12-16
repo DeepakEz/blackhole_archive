@@ -212,12 +212,17 @@ class EnhancedBeaverAgent(Agent):
             spacetime.add_structural_field(self.position, 2.0, 3.0)
             self.structures_built += 1
             
-            # Energy cost and cooldown
-            self.energy -= 0.05
-            self.construction_cooldown = 1.0  # Wait 1 time unit
+            # Energy economics: MUST be net positive for sustainability
+            construction_cost = 0.02  # Reduced from 0.05
+            energy_reward = 0.05      # Increased from 0.03
             
-            # Get energy from successful build (incentive)
-            self.energy += 0.03
+            self.energy -= construction_cost
+            self.energy += energy_reward
+            # Net per build: +0.03 (sustainable!)
+            
+            self.construction_cooldown = 1.0  # Wait 1 time unit
+            # During cooldown, lose: 1.0 * 0.005 = 0.005
+            # Net per cycle: +0.03 - 0.005 = +0.025 (positive!)
         
         # Move toward high curvature regions
         # Sample nearby points
@@ -334,6 +339,13 @@ class EnhancedBeeAgent(Agent):
             if self.packet is None and self.target_vertex is not None:
                 # Move to target vertex
                 target_pos = semantic_graph.graph.nodes[self.target_vertex]['position']
+                
+                # FIXED: Handle dimension mismatch (target_pos may be 16D, position is 4D)
+                if len(target_pos) > len(self.position):
+                    target_pos = target_pos[:len(self.position)]
+                elif len(target_pos) < len(self.position):
+                    target_pos = np.pad(target_pos, (0, len(self.position) - len(target_pos)))
+                
                 direction = target_pos - self.position
                 self.velocity = 0.3 * direction / (np.linalg.norm(direction) + 1e-6)
                 
