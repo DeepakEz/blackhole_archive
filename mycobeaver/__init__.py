@@ -98,6 +98,21 @@ from .overmind import (
     Overmind,
     NeuralOvermind,
     WisdomState,
+    create_overmind_adapter,
+)
+
+# Architectural contracts (PHASE 1)
+from .contracts import (
+    OvermindSignals,
+    GlobalObservation,
+    AgentObservation,
+    SignalRouter,
+    RewardStructure,
+    DEFAULT_OVERMIND_SIGNALS,
+    SIGNAL_BOUNDS,
+    validate_signals,
+    clamp_signals,
+    ContractViolationError,
 )
 
 from .semantic import (
@@ -193,6 +208,19 @@ __all__ = [
     "Overmind",
     "NeuralOvermind",
     "WisdomState",
+    "create_overmind_adapter",
+
+    # Architectural Contracts
+    "OvermindSignals",
+    "GlobalObservation",
+    "AgentObservation",
+    "SignalRouter",
+    "RewardStructure",
+    "DEFAULT_OVERMIND_SIGNALS",
+    "SIGNAL_BOUNDS",
+    "validate_signals",
+    "clamp_signals",
+    "ContractViolationError",
 
     # Semantic
     "SemanticGraph",

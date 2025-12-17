@@ -30,6 +30,7 @@ except ImportError:
 from .config import SimulationConfig, TrainingConfig, create_default_config
 from .environment import MycoBeaverEnv
 from .policy import MultiAgentPolicy, RolloutBuffer, check_torch
+from .contracts import OvermindSignals, SignalRouter, DEFAULT_OVERMIND_SIGNALS
 
 
 @dataclass
@@ -126,6 +127,12 @@ class PPOTrainer:
         # Rollout buffers (one per agent)
         self.buffers: Dict[str, RolloutBuffer] = {}
 
+        # Signal router for Overmind modulation
+        # This allows Overmind to adjust lr_scale and entropy_scale
+        self._signal_router: Optional[SignalRouter] = None
+        self._base_lr = config.policy.learning_rate
+        self._base_entropy_coef = config.policy.entropy_coef
+
         # Learning rate scheduler
         self.lr_scheduler = None
         if hasattr(torch.optim.lr_scheduler, 'CosineAnnealingLR'):
@@ -134,6 +141,37 @@ class PPOTrainer:
                 T_max=config.training.n_episodes,
                 eta_min=config.policy.learning_rate * 0.1
             )
+
+    def set_signal_router(self, router: SignalRouter) -> None:
+        """
+        Connect the trainer to the Overmind's signal router.
+
+        This allows Overmind to modulate:
+        - lr_scale: Multiplier for learning rate
+        - entropy_scale: Multiplier for entropy coefficient
+
+        Args:
+            router: SignalRouter from Overmind
+        """
+        self._signal_router = router
+
+    def _get_modulated_lr(self) -> float:
+        """Get learning rate modulated by Overmind signal."""
+        if self._signal_router is not None:
+            return self._base_lr * self._signal_router.get_lr_scale()
+        return self._base_lr
+
+    def _get_modulated_entropy_coef(self) -> float:
+        """Get entropy coefficient modulated by Overmind signal."""
+        if self._signal_router is not None:
+            return self._base_entropy_coef * self._signal_router.get_entropy_scale()
+        return self._base_entropy_coef
+
+    def _apply_lr_modulation(self) -> None:
+        """Apply Overmind's learning rate modulation to optimizer."""
+        modulated_lr = self._get_modulated_lr()
+        for param_group in self.policy.optimizer.param_groups:
+            param_group['lr'] = modulated_lr
 
     def collect_rollout(self, n_steps: int) -> Dict[str, float]:
         """
@@ -310,6 +348,12 @@ class PPOTrainer:
         # Normalize advantages
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
+        # Apply Overmind learning rate modulation BEFORE update
+        self._apply_lr_modulation()
+
+        # Get modulated entropy coefficient from Overmind
+        entropy_coef = self._get_modulated_entropy_coef()
+
         # PPO update
         batch_size = self.config.training.batch_size
         n_samples = len(returns)
@@ -358,11 +402,11 @@ class PPOTrainer:
                 # Entropy bonus
                 entropy_loss = -entropy.mean()
 
-                # Total loss
+                # Total loss (using Overmind-modulated entropy coefficient)
                 loss = (
                     policy_loss +
                     self.config.policy.value_coef * value_loss +
-                    self.config.policy.entropy_coef * entropy_loss
+                    entropy_coef * entropy_loss  # Modulated by Overmind signals
                 )
 
                 # Optimize
@@ -424,6 +468,13 @@ class PPOTrainer:
 
         print(f"Starting training for {n_episodes} episodes")
         print(f"Config: {self.config.n_beavers} agents, {self.config.grid.grid_size}x{self.config.grid.grid_size} grid")
+
+        # Connect to Overmind's signal router if available
+        # This allows Overmind to modulate lr_scale and entropy_scale
+        if self.config.training.use_overmind and self.env.overmind is not None:
+            router = self.env.overmind.get_signal_router()
+            self.set_signal_router(router)
+            print("Connected to Overmind signal router for lr/entropy modulation")
 
         start_time = time.time()
 
