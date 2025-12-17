@@ -51,6 +51,11 @@ class WisdomState:
     project_efficiency: float = 0.0
     habitat_quality: float = 0.0
 
+    # === PHASE 2: Information Thermodynamics ===
+    info_dissipation_rate: float = 0.0  # Total info energy spent this step
+    avg_agent_info_energy: float = 100.0  # Average info energy across agents
+    info_blocked_actions: int = 0  # Actions blocked due to insufficient info
+
     # Derived
     total_wisdom: float = 0.0
 
@@ -58,6 +63,7 @@ class WisdomState:
     history_len: int = 10
     water_variance_history: List[float] = field(default_factory=list)
     flood_history: List[float] = field(default_factory=list)
+    info_dissipation_history: List[float] = field(default_factory=list)
 
 
 class Overmind:
@@ -154,11 +160,14 @@ class Overmind:
             - λ_B * failures + λ_H * habitat_quality
 
         This is an internal assessment metric, NOT a reward signal.
+
+        PHASE 2: Now includes info dissipation metrics.
         """
         c = self.config
 
         # Extract features from observation
-        if len(observation) >= 9:
+        # PHASE 2: Extended observation now includes info metrics
+        if len(observation) >= 12:
             water_mean = observation[0]
             water_variance = observation[1]
             water_max = observation[2]
@@ -168,6 +177,24 @@ class Overmind:
             agent_survival = observation[6]
             avg_energy = observation[7]
             project_count = observation[8]
+            # PHASE 2: Info metrics
+            info_dissipation = observation[9]
+            avg_info_energy = observation[10]
+            info_blocked = observation[11]
+        elif len(observation) >= 9:
+            water_mean = observation[0]
+            water_variance = observation[1]
+            water_max = observation[2]
+            vegetation = observation[3]
+            flood_fraction = observation[4]
+            drought_fraction = observation[5]
+            agent_survival = observation[6]
+            avg_energy = observation[7]
+            project_count = observation[8]
+            # Fallback info metrics
+            info_dissipation = 0.0
+            avg_info_energy = 100.0
+            info_blocked = 0
         else:
             # Fallback defaults
             water_variance = 0.1
@@ -175,6 +202,9 @@ class Overmind:
             drought_fraction = 0.1
             agent_survival = 0.8
             vegetation = 0.5
+            info_dissipation = 0.0
+            avg_info_energy = 100.0
+            info_blocked = 0
 
         # Update wisdom state
         self.wisdom_state.water_variance = water_variance
@@ -182,12 +212,19 @@ class Overmind:
         self.wisdom_state.drought_fraction = drought_fraction
         self.wisdom_state.colony_health = agent_survival
 
+        # PHASE 2: Update info metrics
+        self.wisdom_state.info_dissipation_rate = info_dissipation
+        self.wisdom_state.avg_agent_info_energy = avg_info_energy
+        self.wisdom_state.info_blocked_actions = int(info_blocked)
+
         # Track history
         self.wisdom_state.water_variance_history.append(water_variance)
         self.wisdom_state.flood_history.append(flood_fraction)
+        self.wisdom_state.info_dissipation_history.append(info_dissipation)
         if len(self.wisdom_state.water_variance_history) > self.wisdom_state.history_len:
             self.wisdom_state.water_variance_history.pop(0)
             self.wisdom_state.flood_history.pop(0)
+            self.wisdom_state.info_dissipation_history.pop(0)
 
         # Compute habitat quality
         habitat_quality = vegetation * (1.0 - flood_fraction) * (1.0 - drought_fraction)
@@ -242,10 +279,31 @@ class Overmind:
             signals["entropy_scale"] = max(0.5, signals["entropy_scale"] - 0.1)
 
         # === COMMUNICATION BUDGET ===
-        # More communication in crisis
-        if crisis:
+        # PHASE 2: Throttle based on info dissipation rate
+        # High dissipation = agents are spending info fast = reduce budget
+        # Low avg info energy = agents are depleted = reduce budget
+        # Many blocked actions = system constrained = throttle carefully
+        info_strained = (
+            self.wisdom_state.avg_agent_info_energy < 50.0 or
+            self.wisdom_state.info_blocked_actions > 5
+        )
+        info_healthy = self.wisdom_state.avg_agent_info_energy > 80.0
+
+        # High dissipation rate means agents are communicating heavily
+        # Use history to detect sustained high dissipation
+        high_dissipation = False
+        if len(self.wisdom_state.info_dissipation_history) >= 3:
+            avg_dissipation = np.mean(self.wisdom_state.info_dissipation_history[-3:])
+            high_dissipation = avg_dissipation > 20.0  # Threshold for heavy communication
+
+        if info_strained or high_dissipation:
+            # Throttle communication to conserve info energy
+            signals["comm_budget"] = max(3, signals["comm_budget"] - 2)
+        elif crisis and info_healthy:
+            # Allow more communication in crisis, but only if info is healthy
             signals["comm_budget"] = min(50, signals["comm_budget"] + 5)
-        else:
+        elif info_healthy:
+            # Normal operation with healthy info levels
             signals["comm_budget"] = max(5, signals["comm_budget"] - 1)
 
         # === PHEROMONE DYNAMICS ===
@@ -349,6 +407,10 @@ class Overmind:
             "water_variance": self.wisdom_state.water_variance,
             "flood_fraction": self.wisdom_state.flood_fraction,
             "colony_health": self.wisdom_state.colony_health,
+            # PHASE 2: Info metrics
+            "info_dissipation_rate": self.wisdom_state.info_dissipation_rate,
+            "avg_agent_info_energy": self.wisdom_state.avg_agent_info_energy,
+            "info_blocked_actions": self.wisdom_state.info_blocked_actions,
         }
 
     def reset(self):

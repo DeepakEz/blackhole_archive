@@ -127,6 +127,50 @@ class AgentConfig:
     min_energy: float = 0.0
     min_satiety_before_damage: float = 0.1
 
+    # === PHASE 2: Information Energy ===
+    # Information is a first-class resource with explicit costs
+    initial_info_energy: float = 100.0  # Starting info energy
+    max_info_energy: float = 150.0  # Maximum info energy capacity
+
+    # Info energy recovery rates
+    info_recovery_base: float = 0.5  # Passive recovery per step
+    info_recovery_coordination: float = 2.0  # Bonus for successful coordination
+    info_recovery_project_success: float = 10.0  # Bonus when project completes
+    info_recovery_uncertainty_reduction: float = 1.0  # Bonus for reducing entropy
+
+
+@dataclass
+class InfoCostConfig:
+    """
+    PHASE 2: Information Thermodynamics - Explicit info costs.
+
+    Every information-producing action has a cost.
+    This prevents unbounded communication and incentivizes
+    efficient information flow.
+    """
+    # Communication costs
+    cost_send_message: float = 1.0  # c_msg - sending any message
+    cost_broadcast: float = 2.0  # Higher cost for broadcasts
+    cost_consensus_vote: float = 0.5  # Voting in consensus
+
+    # Pheromone costs
+    cost_pheromone_deposit: float = 0.5  # c_pher - depositing pheromone
+    cost_pheromone_reinforce: float = 1.0  # Extra cost for path reinforcement
+
+    # Semantic costs
+    cost_semantic_vertex: float = 1.5  # c_sem - adding knowledge vertex
+    cost_semantic_edge: float = 0.5  # Adding edge to knowledge graph
+    cost_semantic_query: float = 0.2  # Querying the semantic graph
+
+    # Project costs
+    cost_project_proposal: float = 5.0  # c_proj - proposing new project
+    cost_project_advertise: float = 1.0  # Waggle dance advertising
+    cost_project_vote: float = 0.5  # Voting on project
+
+    # Minimum info energy to perform actions
+    # Below this, actions fail silently (agents become "quiet")
+    min_info_for_action: float = 1.0
+
 
 @dataclass
 class PheromoneConfig:
@@ -367,6 +411,9 @@ class SimulationConfig:
     # Agents
     n_beavers: int = 20
     agent: AgentConfig = field(default_factory=AgentConfig)
+
+    # PHASE 2: Information costs
+    info_costs: InfoCostConfig = field(default_factory=InfoCostConfig)
 
     # Colony systems
     pheromone: PheromoneConfig = field(default_factory=PheromoneConfig)
