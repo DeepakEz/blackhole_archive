@@ -18,7 +18,12 @@ from enum import Enum
 import heapq
 from collections import defaultdict
 
-from .config import SemanticConfig
+from .config import SemanticConfig, InfoCostConfig
+
+# Forward reference for type hints
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from .environment import AgentState
 
 
 class VertexType(Enum):
@@ -109,10 +114,19 @@ class SemanticGraph:
     3. Ant colony traversal for pattern discovery
     4. Semantic entropy calculation for coherence
     5. Contradiction detection and resolution
+
+    PHASE 2: Information Thermodynamics
+    ------------------------------------
+    Adding vertices, edges, and querying have info costs.
+    Agents must have sufficient info_energy to modify the graph.
     """
 
-    def __init__(self, config: SemanticConfig):
+    def __init__(self, config: SemanticConfig,
+                 info_costs: Optional[InfoCostConfig] = None):
         self.config = config
+
+        # PHASE 2: Info cost configuration
+        self.info_costs = info_costs or InfoCostConfig()
 
         # Graph storage
         self.vertices: Dict[int, Vertex] = {}
@@ -139,12 +153,20 @@ class SemanticGraph:
         # Step counter
         self.step_count = 0
 
+        # PHASE 2: Info dissipation tracking
+        self.info_spent_this_step = 0.0
+        self.operations_blocked_by_info = 0
+
     def add_vertex(self, vertex_type: VertexType, content: Any,
                    confidence: float = 1.0,
                    position: Optional[Tuple[int, int]] = None,
-                   source_agent: int = -1) -> int:
+                   source_agent: int = -1,
+                   agent_state: Optional['AgentState'] = None) -> Optional[int]:
         """
         Add a vertex to the graph.
+
+        PHASE 2: Adding vertices costs info_energy (cost_semantic_vertex).
+        Silent failure if insufficient energy.
 
         Args:
             vertex_type: Type of vertex
@@ -152,10 +174,20 @@ class SemanticGraph:
             confidence: Confidence level
             position: Spatial position (for location vertices)
             source_agent: ID of agent that created this
+            agent_state: Optional agent state for info cost checking
 
         Returns:
-            Vertex ID
+            Vertex ID, or None if blocked by info cost
         """
+        # PHASE 2: Check info cost
+        if agent_state is not None:
+            cost = self.info_costs.cost_semantic_vertex
+            if not agent_state.can_afford_info(cost, self.info_costs.min_info_for_action):
+                self.operations_blocked_by_info += 1
+                return None
+            agent_state.spend_info(cost)
+            self.info_spent_this_step += cost
+
         if len(self.vertices) >= self.config.max_vertices:
             # Remove lowest activation vertex
             self._prune_lowest_activation()
@@ -177,9 +209,13 @@ class SemanticGraph:
 
     def add_edge(self, from_vertex: int, to_vertex: int,
                  edge_type: EdgeType, weight: float = 1.0,
-                 confidence: float = 1.0) -> Optional[int]:
+                 confidence: float = 1.0,
+                 agent_state: Optional['AgentState'] = None) -> Optional[int]:
         """
         Add an edge between vertices.
+
+        PHASE 2: Adding edges costs info_energy (cost_semantic_edge).
+        Silent failure if insufficient energy.
 
         Args:
             from_vertex: Source vertex ID
@@ -187,9 +223,10 @@ class SemanticGraph:
             edge_type: Type of relationship
             weight: Edge weight
             confidence: Confidence in relationship
+            agent_state: Optional agent state for info cost checking
 
         Returns:
-            Edge ID or None if invalid
+            Edge ID or None if invalid or blocked by info cost
         """
         if from_vertex not in self.vertices or to_vertex not in self.vertices:
             return None
@@ -197,6 +234,15 @@ class SemanticGraph:
         # Check max edges per vertex
         if len(self.out_edges[from_vertex]) >= self.config.max_edges_per_vertex:
             return None
+
+        # PHASE 2: Check info cost
+        if agent_state is not None:
+            cost = self.info_costs.cost_semantic_edge
+            if not agent_state.can_afford_info(cost, self.info_costs.min_info_for_action):
+                self.operations_blocked_by_info += 1
+                return None
+            agent_state.spend_info(cost)
+            self.info_spent_this_step += cost
 
         edge = Edge(
             id=self.next_edge_id,
@@ -538,18 +584,32 @@ class SemanticGraph:
                     )
 
     def find_path(self, from_vertex: int, to_vertex: int,
-                  max_depth: int = 10) -> Optional[List[int]]:
+                  max_depth: int = 10,
+                  agent_state: Optional['AgentState'] = None) -> Optional[List[int]]:
         """
         Find path between vertices using A* with pheromone heuristic.
+
+        PHASE 2: Querying the graph costs info_energy (cost_semantic_query).
+        Silent failure if insufficient energy.
 
         Args:
             from_vertex: Start vertex
             to_vertex: End vertex
             max_depth: Maximum path length
+            agent_state: Optional agent state for info cost checking
 
         Returns:
             List of vertex IDs forming path, or None
         """
+        # PHASE 2: Check info cost for queries
+        if agent_state is not None:
+            cost = self.info_costs.cost_semantic_query
+            if not agent_state.can_afford_info(cost, self.info_costs.min_info_for_action):
+                self.operations_blocked_by_info += 1
+                return None
+            agent_state.spend_info(cost)
+            self.info_spent_this_step += cost
+
         if from_vertex not in self.vertices or to_vertex not in self.vertices:
             return None
 
@@ -651,7 +711,27 @@ class SemanticGraph:
             "n_ants": len(self.ants),
             "avg_pheromone": np.mean([e.pheromone for e in self.edges.values()])
                             if self.edges else 0.0,
+            # PHASE 2: Info dissipation metrics
+            "info_spent_this_step": self.info_spent_this_step,
+            "operations_blocked_by_info": self.operations_blocked_by_info,
         }
+
+    def get_info_dissipation(self) -> float:
+        """
+        PHASE 2: Get info energy spent this step.
+
+        Used by Overmind to observe global info dissipation rate.
+        """
+        return self.info_spent_this_step
+
+    def reset_step_tracking(self):
+        """
+        PHASE 2: Reset per-step tracking variables.
+
+        Call at the beginning of each step.
+        """
+        self.info_spent_this_step = 0.0
+        self.operations_blocked_by_info = 0
 
     def reset(self):
         """Reset graph to initial state"""
@@ -667,6 +747,10 @@ class SemanticGraph:
         self.temperature = self.config.semantic_temperature_init
         self.step_count = 0
 
+        # PHASE 2: Reset info tracking
+        self.info_spent_this_step = 0.0
+        self.operations_blocked_by_info = 0
+
 
 class ColonySemanticSystem:
     """
@@ -674,33 +758,45 @@ class ColonySemanticSystem:
 
     Manages shared knowledge graph for the entire colony,
     integrating observations from all agents.
+
+    PHASE 2: All graph modifications have info costs when agent_state is provided.
     """
 
-    def __init__(self, config: SemanticConfig, n_agents: int):
+    def __init__(self, config: SemanticConfig, n_agents: int,
+                 info_costs: Optional[InfoCostConfig] = None):
         self.config = config
         self.n_agents = n_agents
 
         # Shared knowledge graph
-        self.shared_graph = SemanticGraph(config)
+        self.shared_graph = SemanticGraph(config, info_costs)
 
         # Per-agent local graphs (subset views)
         self.agent_views: Dict[int, Set[int]] = defaultdict(set)
 
         # Observation integration buffer
-        self.pending_observations: List[Tuple[int, VertexType, Any]] = []
+        # Now includes optional agent_state for info cost checking
+        self.pending_observations: List[Tuple[int, VertexType, Any, Optional[Tuple[int, int]], Optional['AgentState']]] = []
 
     def add_observation(self, agent_id: int, obs_type: VertexType,
-                        content: Any, position: Optional[Tuple[int, int]] = None):
+                        content: Any, position: Optional[Tuple[int, int]] = None,
+                        agent_state: Optional['AgentState'] = None):
         """
         Add an observation from an agent.
 
+        PHASE 2: Observations are buffered with agent_state for info cost checking
+        during integration.
+
         Observations are buffered and integrated during update.
         """
-        self.pending_observations.append((agent_id, obs_type, content, position))
+        self.pending_observations.append((agent_id, obs_type, content, position, agent_state))
 
     def integrate_observations(self):
-        """Integrate pending observations into the graph"""
-        for agent_id, obs_type, content, position in self.pending_observations:
+        """
+        Integrate pending observations into the graph.
+
+        PHASE 2: If agent_state was provided, checks and deducts info_energy.
+        """
+        for agent_id, obs_type, content, position, agent_state in self.pending_observations:
             # Check for duplicate content
             existing = None
             for v in self.shared_graph.vertices.values():
@@ -709,31 +805,35 @@ class ColonySemanticSystem:
                     break
 
             if existing:
-                # Reinforce existing vertex
+                # Reinforce existing vertex (no info cost for reinforcement)
                 existing.confidence = min(1.0, existing.confidence + 0.1)
                 existing.activation += 0.2
                 self.agent_views[agent_id].add(existing.id)
             else:
-                # Create new vertex
+                # Create new vertex (info cost applies)
                 vid = self.shared_graph.add_vertex(
                     vertex_type=obs_type,
                     content=content,
                     position=position,
                     source_agent=agent_id,
+                    agent_state=agent_state,  # PHASE 2: Info cost check
                 )
-                self.agent_views[agent_id].add(vid)
 
-                # Link to nearby vertices
-                if position:
-                    for v in self.shared_graph.vertices.values():
-                        if v.position and v.id != vid:
-                            dist = abs(v.position[0] - position[0]) + abs(v.position[1] - position[1])
-                            if dist <= 3:
-                                self.shared_graph.add_edge(
-                                    vid, v.id,
-                                    EdgeType.SPATIAL,
-                                    weight=1.0 / (dist + 1)
-                                )
+                if vid is not None:  # Only if not blocked by info cost
+                    self.agent_views[agent_id].add(vid)
+
+                    # Link to nearby vertices (edge costs apply)
+                    if position:
+                        for v in self.shared_graph.vertices.values():
+                            if v.position and v.id != vid:
+                                dist = abs(v.position[0] - position[0]) + abs(v.position[1] - position[1])
+                                if dist <= 3:
+                                    self.shared_graph.add_edge(
+                                        vid, v.id,
+                                        EdgeType.SPATIAL,
+                                        weight=1.0 / (dist + 1),
+                                        agent_state=agent_state,  # PHASE 2: Info cost check
+                                    )
 
         self.pending_observations.clear()
 
@@ -755,6 +855,14 @@ class ColonySemanticSystem:
     def get_coherence(self) -> float:
         """Get overall colony belief coherence"""
         return self.shared_graph.compute_coherence()
+
+    def get_info_dissipation(self) -> float:
+        """PHASE 2: Get info energy spent this step."""
+        return self.shared_graph.get_info_dissipation()
+
+    def reset_step_tracking(self):
+        """PHASE 2: Reset per-step tracking."""
+        self.shared_graph.reset_step_tracking()
 
     def reset(self):
         """Reset semantic system"""

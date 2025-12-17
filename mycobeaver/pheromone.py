@@ -14,7 +14,12 @@ import numpy as np
 from typing import List, Tuple, Optional, Dict
 from dataclasses import dataclass, field
 
-from .config import PheromoneConfig
+from .config import PheromoneConfig, InfoCostConfig
+
+# Forward reference for type hints
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from .environment import AgentState
 
 
 @dataclass
@@ -40,11 +45,20 @@ class PheromoneField:
     1. Evaporation: Global decay of all pheromone values
     2. Deposition: Agents deposit pheromone when moving
     3. Routing: Probability distribution for movement decisions
+
+    PHASE 2: Information Thermodynamics
+    ------------------------------------
+    Depositing pheromone costs info_energy.
+    Agents must have sufficient info_energy to deposit.
     """
 
-    def __init__(self, config: PheromoneConfig, grid_size: int):
+    def __init__(self, config: PheromoneConfig, grid_size: int,
+                 info_costs: Optional[InfoCostConfig] = None):
         self.config = config
         self.grid_size = grid_size
+
+        # PHASE 2: Info cost configuration
+        self.info_costs = info_costs or InfoCostConfig()
 
         # Store pheromones as a 4D array: [y, x, dy_offset, dx_offset]
         # Offsets are encoded as: 0=(-1,-1), 1=(-1,0), 2=(-1,1), 3=(0,-1),
@@ -66,6 +80,10 @@ class PheromoneField:
         self.total_depositions = 0
         self.step_count = 0
 
+        # PHASE 2: Info dissipation tracking
+        self.info_spent_this_step = 0.0
+        self.deposits_blocked_by_info = 0
+
     def evaporate(self, dt: float):
         """
         Apply global evaporation to all pheromone values.
@@ -84,9 +102,13 @@ class PheromoneField:
         self.step_count += 1
 
     def deposit(self, from_cell: Tuple[int, int], to_cell: Tuple[int, int],
-                amount: Optional[float] = None, success: bool = False):
+                amount: Optional[float] = None, success: bool = False,
+                agent_state: Optional['AgentState'] = None) -> bool:
         """
         Deposit pheromone on edge from one cell to another.
+
+        PHASE 2: Depositing costs info_energy (cost_pheromone_deposit).
+        Silent failure if insufficient energy.
 
         τ_{ij} += δ_k
         If success (e.g., found food), multiply by success multiplier.
@@ -96,6 +118,10 @@ class PheromoneField:
             to_cell: (y, x) of destination cell
             amount: Pheromone amount (default: base_deposit)
             success: Whether this was a successful traversal
+            agent_state: Optional agent state for info cost checking
+
+        Returns:
+            True if deposit succeeded, False if blocked by info cost
         """
         y1, x1 = from_cell
         y2, x2 = to_cell
@@ -109,11 +135,20 @@ class PheromoneField:
         dx = np.clip(dx, -1, 1)
 
         if (dy, dx) == (0, 0):
-            return  # No movement
+            return False  # No movement
 
         direction_idx = self.offset_to_index.get((dy, dx))
         if direction_idx is None:
-            return  # Invalid direction
+            return False  # Invalid direction
+
+        # PHASE 2: Check info cost
+        if agent_state is not None:
+            cost = self.info_costs.cost_pheromone_deposit
+            if not agent_state.can_afford_info(cost, self.info_costs.min_info_for_action):
+                self.deposits_blocked_by_info += 1
+                return False
+            agent_state.spend_info(cost)
+            self.info_spent_this_step += cost
 
         # Compute deposit amount
         if amount is None:
@@ -133,6 +168,9 @@ class PheromoneField:
             )
 
             self.total_depositions += 1
+            return True
+
+        return False
 
     def update(self, movements: List[Tuple[Tuple[int, int], Tuple[int, int]]],
                successful_paths: Optional[List[bool]] = None):
@@ -302,9 +340,13 @@ class PheromoneField:
 
     def reinforce_path(self, path: List[Tuple[int, int]],
                        quality: float = 1.0,
-                       decay_along_path: bool = True):
+                       decay_along_path: bool = True,
+                       agent_state: Optional['AgentState'] = None) -> int:
         """
         Reinforce pheromone along an entire path.
+
+        PHASE 2: Path reinforcement costs info_energy (cost_pheromone_reinforce)
+        for the whole path, not per-segment.
 
         Used when an agent successfully reaches a goal and wants
         to strengthen the path for others.
@@ -313,11 +355,25 @@ class PheromoneField:
             path: List of (y, x) cells in order
             quality: Quality multiplier (e.g., path efficiency)
             decay_along_path: Whether to decay deposit along path length
+            agent_state: Optional agent state for info cost checking
+
+        Returns:
+            Number of path segments reinforced
         """
         if len(path) < 2:
-            return
+            return 0
+
+        # PHASE 2: Check info cost for path reinforcement (higher cost)
+        if agent_state is not None:
+            cost = self.info_costs.cost_pheromone_reinforce
+            if not agent_state.can_afford_info(cost, self.info_costs.min_info_for_action):
+                self.deposits_blocked_by_info += 1
+                return 0
+            agent_state.spend_info(cost)
+            self.info_spent_this_step += cost
 
         n = len(path)
+        reinforced = 0
 
         for i in range(len(path) - 1):
             from_cell = path[i]
@@ -330,7 +386,11 @@ class PheromoneField:
                 position_factor = 1.0
 
             amount = self.config.base_deposit * quality * position_factor
-            self.deposit(from_cell, to_cell, amount=amount, success=True)
+            # Don't pass agent_state here - already paid the cost
+            if self.deposit(from_cell, to_cell, amount=amount, success=True, agent_state=None):
+                reinforced += 1
+
+        return reinforced
 
     def diffuse(self, rate: float = 0.1):
         """
@@ -371,7 +431,27 @@ class PheromoneField:
             "std_pheromone": float(np.std(self.pheromone_grid)),
             "total_depositions": self.total_depositions,
             "steps": self.step_count,
+            # PHASE 2: Info dissipation metrics
+            "info_spent_this_step": self.info_spent_this_step,
+            "deposits_blocked_by_info": self.deposits_blocked_by_info,
         }
+
+    def get_info_dissipation(self) -> float:
+        """
+        PHASE 2: Get info energy spent this step.
+
+        Used by Overmind to observe global info dissipation rate.
+        """
+        return self.info_spent_this_step
+
+    def reset_step_tracking(self):
+        """
+        PHASE 2: Reset per-step tracking variables.
+
+        Call at the beginning of each step.
+        """
+        self.info_spent_this_step = 0.0
+        self.deposits_blocked_by_info = 0
 
     def get_heatmap(self) -> np.ndarray:
         """
@@ -392,6 +472,10 @@ class PheromoneField:
         self.total_depositions = 0
         self.step_count = 0
 
+        # PHASE 2: Reset info tracking
+        self.info_spent_this_step = 0.0
+        self.deposits_blocked_by_info = 0
+
 
 class MultiPheromoneField:
     """
@@ -402,9 +486,12 @@ class MultiPheromoneField:
     - Danger pheromone: Warns of hazards
     - Project pheromone: Guides to construction sites
     - Home pheromone: Guides back to lodge
+
+    PHASE 2: All deposit operations have info costs when agent_state is provided.
     """
 
-    def __init__(self, config: PheromoneConfig, grid_size: int, n_types: int = 4):
+    def __init__(self, config: PheromoneConfig, grid_size: int, n_types: int = 4,
+                 info_costs: Optional[InfoCostConfig] = None):
         self.config = config
         self.grid_size = grid_size
         self.n_types = n_types
@@ -414,7 +501,7 @@ class MultiPheromoneField:
 
         # Create separate fields for each type
         self.fields = {
-            name: PheromoneField(config, grid_size)
+            name: PheromoneField(config, grid_size, info_costs)
             for name in self.type_names
         }
 
@@ -425,10 +512,18 @@ class MultiPheromoneField:
 
     def deposit(self, pheromone_type: str, from_cell: Tuple[int, int],
                 to_cell: Tuple[int, int], amount: Optional[float] = None,
-                success: bool = False):
-        """Deposit specific pheromone type"""
+                success: bool = False,
+                agent_state: Optional['AgentState'] = None) -> bool:
+        """
+        Deposit specific pheromone type.
+
+        PHASE 2: Costs info_energy when agent_state is provided.
+        """
         if pheromone_type in self.fields:
-            self.fields[pheromone_type].deposit(from_cell, to_cell, amount, success)
+            return self.fields[pheromone_type].deposit(
+                from_cell, to_cell, amount, success, agent_state
+            )
+        return False
 
     def get_combined_routing(self, y: int, x: int,
                              weights: Optional[Dict[str, float]] = None,
@@ -472,6 +567,15 @@ class MultiPheromoneField:
     def get_field(self, pheromone_type: str) -> Optional[PheromoneField]:
         """Get specific pheromone field"""
         return self.fields.get(pheromone_type)
+
+    def get_info_dissipation(self) -> float:
+        """PHASE 2: Get total info energy spent this step across all fields."""
+        return sum(field.get_info_dissipation() for field in self.fields.values())
+
+    def reset_step_tracking(self):
+        """PHASE 2: Reset per-step tracking for all fields."""
+        for field in self.fields.values():
+            field.reset_step_tracking()
 
     def reset(self):
         """Reset all pheromone fields"""

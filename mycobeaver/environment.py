@@ -210,6 +210,29 @@ class AgentState:
     # Movement tracking
     previous_position: Optional[Tuple[int, int]] = None
 
+    # === PHASE 2: Information Energy ===
+    # Info energy is a first-class resource that constrains information actions
+    info_energy: float = 100.0  # Current info energy level
+
+    def can_afford_info(self, cost: float, min_threshold: float = 1.0) -> bool:
+        """Check if agent can afford an info action"""
+        return self.info_energy >= max(cost, min_threshold)
+
+    def spend_info(self, cost: float) -> bool:
+        """
+        Spend info energy. Returns True if successful, False if insufficient.
+
+        Silent failure pattern: if can't afford, action simply doesn't happen.
+        """
+        if self.info_energy >= cost:
+            self.info_energy -= cost
+            return True
+        return False
+
+    def recover_info(self, amount: float, max_energy: float = 150.0):
+        """Recover info energy (capped at max)"""
+        self.info_energy = min(max_energy, self.info_energy + amount)
+
 
 class MycoBeaverEnv(gym.Env):
     """
@@ -629,7 +652,7 @@ class MycoBeaverEnv(gym.Env):
         return reward
 
     def _update_agent_state(self, agent: AgentState):
-        """Update agent internal state (energy, satiety, wetness, death)"""
+        """Update agent internal state (energy, satiety, wetness, info_energy, death)"""
         config = self.config.agent
         y, x = agent.position
         dt = self.config.grid.dt
@@ -655,6 +678,18 @@ class MycoBeaverEnv(gym.Env):
             agent.wetness = min(1.0, agent.wetness + config.water_wetness_rate * dt)
         else:
             agent.wetness = max(0.0, agent.wetness - config.ambient_drying_rate * dt)
+
+        # === PHASE 2: Info Energy Recovery ===
+        # Base passive recovery
+        agent.recover_info(config.info_recovery_base * dt, config.max_info_energy)
+
+        # Bonus recovery if agent is at a lodge (resting = clearer thinking)
+        if self.grid_state.lodge_map[y, x]:
+            agent.recover_info(config.info_recovery_base * 2 * dt, config.max_info_energy)
+
+        # Bonus recovery if agent is in coordination with others (same cell)
+        if self.grid_state.agent_positions[y, x] > 1:
+            agent.recover_info(config.info_recovery_coordination * 0.1 * dt, config.max_info_energy)
 
         # Check death conditions
         if agent.energy <= config.min_energy:
@@ -767,6 +802,15 @@ class MycoBeaverEnv(gym.Env):
                     reward += self.config.reward.dam_completion_bonus
                 elif project_type == ProjectType.LODGE:
                     reward += self.config.reward.lodge_completion_bonus
+
+                # PHASE 2: Info recovery for project success
+                # All agents get an info boost when projects complete
+                for agent in self.agents:
+                    if agent.alive:
+                        agent.recover_info(
+                            self.config.agent.info_recovery_project_success,
+                            self.config.agent.max_info_energy
+                        )
 
         return reward
 
@@ -896,7 +940,11 @@ class MycoBeaverEnv(gym.Env):
         }
 
     def _get_overmind_observation(self) -> np.ndarray:
-        """Get observation for overmind meta-controller"""
+        """
+        Get observation for overmind meta-controller.
+
+        PHASE 2: Extended to include info dissipation metrics.
+        """
         features = []
 
         # Water statistics
@@ -925,6 +973,27 @@ class MycoBeaverEnv(gym.Env):
             features.append(n_active / 10.0)  # Normalized
         else:
             features.append(0.0)
+
+        # === PHASE 2: Info dissipation metrics ===
+        # Total info dissipation this step (from all subsystems)
+        total_info_dissipation = 0.0
+        info_blocked = 0
+
+        # Collect from pheromone field
+        if self.pheromone_field is not None:
+            total_info_dissipation += self.pheromone_field.get_info_dissipation()
+            stats = self.pheromone_field.get_statistics()
+            info_blocked += stats.get("deposits_blocked_by_info", 0)
+
+        # Average agent info energy
+        avg_info_energy = 100.0
+        if n_alive > 0:
+            alive_agents = [a for a in self.agents if a.alive]
+            avg_info_energy = np.mean([a.info_energy for a in alive_agents])
+
+        features.append(total_info_dissipation / 100.0)  # Normalized
+        features.append(avg_info_energy / self.config.agent.max_info_energy)  # Normalized
+        features.append(float(info_blocked) / 10.0)  # Normalized
 
         # Pad to expected size
         while len(features) < self.config.overmind.n_observation_features:
