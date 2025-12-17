@@ -362,6 +362,41 @@ class TrainingConfig:
 
 
 @dataclass
+class TimeScaleConfig:
+    """
+    PHASE 3: Time-Scale Separation Configuration
+
+    Critical for RL stability - prevents non-stationarity collapse by
+    ensuring different adaptive systems update at different frequencies.
+
+    Update Hierarchy:
+    - PPO (agent learning): Every step (fastest)
+    - Pheromone dynamics: Every step (but decay is natural)
+    - Physarum network: Every N steps (medium, 10-20)
+    - Overmind modulation: Every M steps (slow, 50-100)
+    - Semantic consolidation: Episode end only (slowest)
+    """
+    # Fast systems (every step)
+    # PPO updates happen during training, not environment step
+    # Pheromone evaporation happens every step naturally
+
+    # Medium systems
+    physarum_update_interval: int = 15  # Update physarum every N steps
+    project_recruitment_interval: int = 5  # Update recruitment signals
+
+    # Slow systems
+    overmind_update_interval: int = 50  # Overmind modulation every M steps
+    semantic_consolidation_interval: int = 100  # Consolidate semantic graph
+
+    # Episode-level systems
+    semantic_consolidate_on_episode_end: bool = True
+    clear_semantic_ants_on_episode_end: bool = True
+
+    # Tracking (for debugging/logging)
+    track_update_counts: bool = True
+
+
+@dataclass
 class SemanticConfig:
     """Distributed Cognitive Architecture - Semantic subsystem config"""
     # Knowledge graph
@@ -424,6 +459,9 @@ class SimulationConfig:
     # Cognitive architecture
     semantic: SemanticConfig = field(default_factory=SemanticConfig)
     communication: CommunicationConfig = field(default_factory=CommunicationConfig)
+
+    # PHASE 3: Time-scale separation
+    time_scales: TimeScaleConfig = field(default_factory=TimeScaleConfig)
 
     # Learning
     reward: RewardConfig = field(default_factory=RewardConfig)

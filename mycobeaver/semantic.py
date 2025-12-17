@@ -733,6 +733,126 @@ class SemanticGraph:
         self.info_spent_this_step = 0.0
         self.operations_blocked_by_info = 0
 
+    def consolidate(self, prune_low_confidence: bool = True,
+                    remove_weak_edges: bool = True,
+                    clear_ants: bool = True,
+                    confidence_threshold: float = 0.2,
+                    edge_pheromone_threshold: float = 0.05) -> Dict[str, int]:
+        """
+        PHASE 3: Consolidate the semantic graph at episode end.
+
+        This is a SLOW time-scale operation that happens only at episode boundaries.
+        It prevents graph bloat and improves coherence by:
+        1. Pruning low-confidence vertices (noise)
+        2. Removing weak edges (unused paths)
+        3. Clearing ants (reset exploration)
+        4. Boosting surviving vertices/edges (survival = importance)
+
+        Args:
+            prune_low_confidence: Remove vertices with low confidence
+            remove_weak_edges: Remove edges with low pheromone
+            clear_ants: Clear all ants for fresh exploration next episode
+            confidence_threshold: Vertices below this confidence are pruned
+            edge_pheromone_threshold: Edges below this pheromone level are pruned
+
+        Returns:
+            Dict with counts of pruned items
+        """
+        stats = {
+            "vertices_pruned": 0,
+            "edges_pruned": 0,
+            "ants_cleared": len(self.ants) if clear_ants else 0,
+            "vertices_boosted": 0,
+            "edges_boosted": 0,
+        }
+
+        # === 1. Identify low-confidence vertices to prune ===
+        if prune_low_confidence:
+            vertices_to_remove = []
+            for vid, vertex in self.vertices.items():
+                if vertex.confidence < confidence_threshold:
+                    vertices_to_remove.append(vid)
+
+            # Remove identified vertices and their edges
+            for vid in vertices_to_remove:
+                self._remove_vertex(vid)
+                stats["vertices_pruned"] += 1
+
+        # === 2. Remove weak edges ===
+        if remove_weak_edges:
+            edges_to_remove = []
+            for eid, edge in self.edges.items():
+                if edge.pheromone < edge_pheromone_threshold:
+                    # Also check traversal count - if heavily traversed, keep it
+                    if edge.traversal_count < 3:
+                        edges_to_remove.append(eid)
+
+            for eid in edges_to_remove:
+                self._remove_edge(eid)
+                stats["edges_pruned"] += 1
+
+        # === 3. Boost surviving vertices and edges ===
+        # Survival through consolidation = importance signal
+        for vertex in self.vertices.values():
+            # Small confidence boost for survivors
+            vertex.confidence = min(1.0, vertex.confidence + 0.05)
+            stats["vertices_boosted"] += 1
+
+        for edge in self.edges.values():
+            # Edges that survived get a pheromone boost
+            edge.pheromone = min(1.0, edge.pheromone * 1.1)
+            # Reset traversal count for next episode
+            edge.traversal_count = 0
+            stats["edges_boosted"] += 1
+
+        # === 4. Clear ants for fresh exploration ===
+        if clear_ants:
+            self.ants.clear()
+
+        # === 5. Cool temperature toward equilibrium ===
+        self.temperature = max(
+            self.config.semantic_temperature_min,
+            self.temperature * 0.9
+        )
+
+        return stats
+
+    def _remove_vertex(self, vid: int):
+        """Remove a vertex and all its connected edges"""
+        if vid not in self.vertices:
+            return
+
+        # Get all connected edges
+        out_edges = list(self.out_edges.get(vid, set()))
+        in_edges = list(self.in_edges.get(vid, set()))
+
+        # Remove edges
+        for eid in out_edges + in_edges:
+            self._remove_edge(eid)
+
+        # Remove vertex
+        del self.vertices[vid]
+
+        # Clean up edge maps
+        self.out_edges.pop(vid, None)
+        self.in_edges.pop(vid, None)
+
+    def _remove_edge(self, eid: int):
+        """Remove an edge from the graph"""
+        if eid not in self.edges:
+            return
+
+        edge = self.edges[eid]
+
+        # Remove from adjacency
+        if edge.source in self.out_edges:
+            self.out_edges[edge.source].discard(eid)
+        if edge.target in self.in_edges:
+            self.in_edges[edge.target].discard(eid)
+
+        # Remove edge
+        del self.edges[eid]
+
     def reset(self):
         """Reset graph to initial state"""
         self.vertices.clear()
@@ -863,6 +983,36 @@ class ColonySemanticSystem:
     def reset_step_tracking(self):
         """PHASE 2: Reset per-step tracking."""
         self.shared_graph.reset_step_tracking()
+
+    def consolidate(self, clear_ants: bool = True) -> Dict[str, int]:
+        """
+        PHASE 3: Consolidate semantic graph at episode end.
+
+        This is a SLOW time-scale operation that happens at episode boundaries.
+        It cleans up the shared knowledge graph to prevent bloat and
+        improve coherence for the next episode.
+
+        Args:
+            clear_ants: Whether to clear all semantic ants
+
+        Returns:
+            Statistics about consolidation
+        """
+        stats = self.shared_graph.consolidate(
+            prune_low_confidence=True,
+            remove_weak_edges=True,
+            clear_ants=clear_ants,
+            confidence_threshold=0.2,
+            edge_pheromone_threshold=0.05,
+        )
+
+        # Also clean up agent views - remove references to pruned vertices
+        for agent_id in self.agent_views:
+            valid_vertices = {vid for vid in self.agent_views[agent_id]
+                            if vid in self.shared_graph.vertices}
+            self.agent_views[agent_id] = valid_vertices
+
+        return stats
 
     def reset(self):
         """Reset semantic system"""

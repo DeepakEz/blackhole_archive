@@ -258,6 +258,7 @@ class MycoBeaverEnv(gym.Env):
         self.project_manager = None
         self.physarum_network = None
         self.overmind = None
+        self.semantic_system = None  # PHASE 3: Colony semantic system
 
         # Grid state
         self.grid_state: Optional[GridState] = None
@@ -268,6 +269,18 @@ class MycoBeaverEnv(gym.Env):
         # Simulation state
         self.current_step = 0
         self.episode_reward = 0.0
+
+        # === PHASE 3: Time-scale separation counters ===
+        # These track when each subsystem was last updated
+        self._last_physarum_update = 0
+        self._last_overmind_update = 0
+        self._last_semantic_consolidation = 0
+        self._last_project_recruitment_update = 0
+
+        # Update counts for debugging/logging
+        self._physarum_update_count = 0
+        self._overmind_update_count = 0
+        self._semantic_consolidation_count = 0
 
         # Random state
         self.np_random = None
@@ -329,6 +342,15 @@ class MycoBeaverEnv(gym.Env):
         # Reset counters
         self.current_step = 0
         self.episode_reward = 0.0
+
+        # === PHASE 3: Reset time-scale separation counters ===
+        self._last_physarum_update = 0
+        self._last_overmind_update = 0
+        self._last_semantic_consolidation = 0
+        self._last_project_recruitment_update = 0
+        self._physarum_update_count = 0
+        self._overmind_update_count = 0
+        self._semantic_consolidation_count = 0
 
         # Get initial observations
         observations = self._get_observations()
@@ -447,16 +469,24 @@ class MycoBeaverEnv(gym.Env):
             self.grid_state.agent_positions[agent.position] += 1
 
     def _initialize_subsystems(self):
-        """Initialize pheromone field, project manager, physarum network, overmind"""
+        """Initialize pheromone field, project manager, physarum network, overmind, semantic system"""
         from .pheromone import PheromoneField
         from .projects import ProjectManager
         from .physarum import PhysarumNetwork
         from .overmind import Overmind
+        from .semantic import ColonySemanticSystem
 
         self.pheromone_field = PheromoneField(self.config.pheromone, self.config.grid.grid_size)
         self.project_manager = ProjectManager(self.config.project, self.config.grid.grid_size)
         self.physarum_network = PhysarumNetwork(self.config.physarum, self.config.grid.grid_size)
         self.overmind = Overmind(self.config.overmind, self.config)
+
+        # PHASE 3: Initialize colony semantic system (slow time-scale)
+        self.semantic_system = ColonySemanticSystem(
+            self.config.semantic,
+            self.config.n_beavers,
+            self.config.info_costs,
+        )
 
     def step(self, actions: Dict[str, int]) -> Tuple[Dict, Dict, bool, bool, Dict]:
         """
@@ -473,11 +503,16 @@ class MycoBeaverEnv(gym.Env):
         """
         self.current_step += 1
         dt = self.config.grid.dt
+        ts_config = self.config.time_scales
 
-        # 1. Overmind phase
+        # 1. Overmind phase (PHASE 3: respects time-scale interval)
+        # Overmind operates on a slow time-scale to provide stable meta-parameters
         if self.config.training.use_overmind:
-            overmind_obs = self._get_overmind_observation()
-            self.overmind.update(overmind_obs, self)
+            if self.current_step - self._last_overmind_update >= ts_config.overmind_update_interval:
+                overmind_obs = self._get_overmind_observation()
+                self.overmind.update(overmind_obs, self)
+                self._last_overmind_update = self.current_step
+                self._overmind_update_count += 1
 
         # 2-3. Apply agent actions
         agent_rewards = self._apply_actions(actions)
@@ -496,6 +531,17 @@ class MycoBeaverEnv(gym.Env):
         # 7. Check termination
         terminated = self._check_terminated()
         truncated = self.current_step >= self.config.training.max_steps_per_episode
+
+        # === PHASE 3: Semantic consolidation at episode end (SLOW time-scale) ===
+        # This is the slowest time-scale operation - only happens when episode ends
+        if (terminated or truncated) and self.semantic_system is not None:
+            ts_config = self.config.time_scales
+            if ts_config.semantic_consolidate_on_episode_end:
+                consolidation_stats = self.semantic_system.consolidate(
+                    clear_ants=ts_config.clear_semantic_ants_on_episode_end
+                )
+                self._semantic_consolidation_count += 1
+                self._last_semantic_consolidation = self.current_step
 
         # Get observations and info
         observations = self._get_observations()
@@ -721,24 +767,43 @@ class MycoBeaverEnv(gym.Env):
         self.grid_state.soil_moisture = new_moisture
 
     def _update_subsystems(self, dt: float):
-        """Update pheromones, projects, physarum"""
-        # Pheromone evaporation
+        """
+        Update pheromones, projects, physarum with PHASE 3 time-scale separation.
+
+        Update hierarchy:
+        - Pheromone evaporation: Every step (fast, natural decay)
+        - Project recruitment: Every N steps (medium)
+        - Physarum network: Every M steps (medium, 10-20)
+        - Semantic consolidation: Handled separately at episode end
+        """
+        ts_config = self.config.time_scales
+
+        # === FAST: Pheromone evaporation (every step) ===
+        # Natural decay happens every step - this is physically realistic
         if self.config.training.use_pheromones:
             self.pheromone_field.evaporate(dt)
 
-        # Project recruitment signals
+        # === MEDIUM: Project recruitment signals ===
+        # Recruitment signals propagate at medium frequency
         if self.config.training.use_projects:
-            advertising_scouts = [a.id for a in self.agents if a.role == AgentRole.SCOUT
-                                 and a.current_project is not None]
-            self.project_manager.update_recruitment(advertising_scouts, dt)
+            if self.current_step - self._last_project_recruitment_update >= ts_config.project_recruitment_interval:
+                advertising_scouts = [a.id for a in self.agents if a.role == AgentRole.SCOUT
+                                     and a.current_project is not None]
+                self.project_manager.update_recruitment(advertising_scouts, dt)
+                self._last_project_recruitment_update = self.current_step
 
-        # Physarum network
+        # === MEDIUM: Physarum network (every 10-20 steps) ===
+        # Physarum operates at a slower timescale than individual agent actions
+        # This prevents the network topology from thrashing and allows
+        # stable path formation before agents respond
         if self.config.training.use_physarum:
-            if self.current_step % self.config.physarum.update_every_n_steps == 0:
+            if self.current_step - self._last_physarum_update >= ts_config.physarum_update_interval:
                 # Determine sources and sinks
                 sources = self._find_resource_sources()
                 sinks = self._find_sinks()
                 self.physarum_network.update(sources, sinks, self.grid_state, dt)
+                self._last_physarum_update = self.current_step
+                self._physarum_update_count += 1
 
     def _find_resource_sources(self) -> List[Tuple[int, int]]:
         """Find high-vegetation cells as resource sources for physarum"""
@@ -1006,7 +1071,7 @@ class MycoBeaverEnv(gym.Env):
         n_alive = sum(1 for a in self.agents if a.alive)
         n_structures = np.sum(self.grid_state.dam_permeability < 0.9)
 
-        return {
+        info = {
             "step": self.current_step,
             "n_alive_agents": n_alive,
             "n_structures": n_structures,
@@ -1014,6 +1079,20 @@ class MycoBeaverEnv(gym.Env):
             "avg_water_level": np.mean(self.grid_state.water_depth),
             "episode_reward": self.episode_reward,
         }
+
+        # === PHASE 3: Time-scale separation tracking ===
+        # Only include if tracking is enabled (useful for debugging/logging)
+        if self.config.time_scales.track_update_counts:
+            info["time_scale_stats"] = {
+                "physarum_updates": self._physarum_update_count,
+                "overmind_updates": self._overmind_update_count,
+                "semantic_consolidations": self._semantic_consolidation_count,
+                "last_physarum_update": self._last_physarum_update,
+                "last_overmind_update": self._last_overmind_update,
+                "last_semantic_consolidation": self._last_semantic_consolidation,
+            }
+
+        return info
 
     def render(self):
         """Render the environment"""
