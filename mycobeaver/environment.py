@@ -760,7 +760,8 @@ class MycoBeaverEnv(gym.Env):
         new_water = self.hydrology_engine.update_water(
             self.grid_state, rainfall, boundary_inflow, dt
         )
-        self.grid_state.water_depth = new_water
+        # Clamp water depth to prevent numerical overflow (max 10 meters)
+        self.grid_state.water_depth = np.clip(new_water, 0.0, 10.0)
 
         # Update soil moisture
         new_moisture = self.vegetation_engine.update_soil_moisture(self.grid_state, dt)
@@ -833,8 +834,9 @@ class MycoBeaverEnv(gym.Env):
         """Compute global reward (wisdom signal components)"""
         reward = 0.0
 
-        # Hydrological stability
+        # Hydrological stability (clip variance to prevent numerical overflow)
         water_variance = np.var(self.grid_state.water_depth)
+        water_variance = np.clip(water_variance, 0.0, 100.0)  # Prevent overflow
         reward -= self.config.overmind.water_variance_weight * water_variance
 
         # Flood penalty
@@ -877,7 +879,8 @@ class MycoBeaverEnv(gym.Env):
                             self.config.agent.max_info_energy
                         )
 
-        return reward
+        # Clip reward to prevent numerical instability
+        return float(np.clip(reward, -1000.0, 1000.0))
 
     def _combine_rewards(self, agent_rewards: Dict[str, float],
                          global_reward: float) -> Dict[str, float]:
@@ -899,7 +902,11 @@ class MycoBeaverEnv(gym.Env):
         global_per_agent = global_reward / max(1, n_alive)
 
         for key, ind_reward in agent_rewards.items():
-            combined[key] = alpha * ind_reward + beta * global_per_agent
+            # Clip individual rewards for stability
+            ind_reward = float(np.clip(ind_reward, -100.0, 100.0))
+            final_reward = alpha * ind_reward + beta * global_per_agent
+            # Clip combined reward to prevent numerical issues
+            combined[key] = float(np.clip(final_reward, -1000.0, 1000.0))
 
         return combined
 
