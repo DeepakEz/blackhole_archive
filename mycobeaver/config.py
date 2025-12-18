@@ -360,6 +360,35 @@ class TrainingConfig:
     use_overmind: bool = True
     use_projects: bool = True
 
+    # === PHASE 6: PPO Stability Enhancements ===
+
+    # KL-target early stopping
+    # If KL divergence exceeds target, stop epoch early to prevent catastrophic updates
+    kl_target: float = 0.015  # Target KL divergence
+    kl_early_stop: bool = True  # Enable early stopping on KL
+
+    # Value loss normalization
+    # Normalize value targets to improve training stability
+    normalize_value_targets: bool = True
+    value_clip_range: float = 0.2  # Clip value function updates (PPO-style)
+
+    # Advantage normalization (per-batch vs global)
+    normalize_advantages_per_batch: bool = True
+
+    # === PHASE 6: Reproducibility ===
+
+    # Full determinism (may slow down training)
+    deterministic: bool = False
+
+    # Seed control
+    torch_seed: Optional[int] = None  # If None, uses main seed
+    numpy_seed: Optional[int] = None  # If None, uses main seed
+    env_seed: Optional[int] = None  # If None, uses main seed
+
+    # Config dumping
+    dump_config_on_start: bool = True
+    config_dump_dir: str = "./configs"
+
 
 @dataclass
 class TimeScaleConfig:

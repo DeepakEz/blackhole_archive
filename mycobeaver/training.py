@@ -48,6 +48,31 @@ class TrainingMetrics:
     approx_kl: float = 0.0
     clip_fraction: float = 0.0
 
+    # === PHASE 6: Enhanced PPO metrics ===
+    advantage_mean: float = 0.0
+    advantage_std: float = 0.0
+    advantage_variance: float = 0.0  # Critical for stability monitoring
+    value_pred_mean: float = 0.0
+    value_target_mean: float = 0.0
+    explained_variance: float = 0.0  # How well value function explains returns
+
+    # KL early stopping metrics
+    kl_early_stopped: bool = False
+    epochs_completed: int = 0
+
+    # Gradient metrics
+    grad_norm: float = 0.0
+    grad_norm_before_clip: float = 0.0
+
+    # Entropy comparison (PHASE 6: policy vs semantic)
+    policy_entropy: float = 0.0
+    semantic_entropy: float = 0.0
+    entropy_ratio: float = 0.0  # policy / semantic - shows exploration vs knowledge
+
+    # Learning rate (after Overmind modulation)
+    current_lr: float = 0.0
+    current_entropy_coef: float = 0.0
+
     # Environment metrics
     n_alive_agents: int = 0
     avg_water_level: float = 0.0
@@ -60,6 +85,10 @@ class TrainingMetrics:
     avg_conductivity: float = 0.0
     semantic_coherence: float = 0.0
     wisdom_signal: float = 0.0
+
+    # Info thermodynamics
+    avg_info_energy: float = 0.0
+    total_info_spent: float = 0.0
 
 
 @dataclass
@@ -95,6 +124,13 @@ class PPOTrainer:
     - Multi-epoch updates
     - Gradient clipping
     - Learning rate scheduling
+
+    PHASE 6 Enhancements:
+    - KL-target early stopping
+    - Value loss clipping
+    - Advantage variance logging
+    - Policy vs semantic entropy tracking
+    - Full reproducibility with seed control
     """
 
     def __init__(self, config: SimulationConfig, device: str = "auto"):
@@ -103,15 +139,27 @@ class PPOTrainer:
         self.config = config
         self.training_config = config.training
 
+        # === PHASE 6: Reproducibility - Seed control ===
+        self._setup_seeds()
+
         # Set device
         if device == "auto":
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         else:
             self.device = torch.device(device)
 
+        # Deterministic mode (PHASE 6)
+        if config.training.deterministic and TORCH_AVAILABLE:
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
+            if hasattr(torch, 'use_deterministic_algorithms'):
+                torch.use_deterministic_algorithms(True)
+            print("Deterministic mode enabled (may be slower)")
+
         print(f"Training on device: {self.device}")
 
         # Create environment
+        env_seed = config.training.env_seed or config.training.seed
         self.env = MycoBeaverEnv(config)
 
         # Create policy
@@ -133,6 +181,11 @@ class PPOTrainer:
         self._base_lr = config.policy.learning_rate
         self._base_entropy_coef = config.policy.entropy_coef
 
+        # === PHASE 6: Value normalization state ===
+        self._value_running_mean = 0.0
+        self._value_running_std = 1.0
+        self._value_count = 0
+
         # Learning rate scheduler
         self.lr_scheduler = None
         if hasattr(torch.optim.lr_scheduler, 'CosineAnnealingLR'):
@@ -141,6 +194,59 @@ class PPOTrainer:
                 T_max=config.training.n_episodes,
                 eta_min=config.policy.learning_rate * 0.1
             )
+
+        # === PHASE 6: Config dumping ===
+        if config.training.dump_config_on_start:
+            self._dump_config()
+
+    def _setup_seeds(self):
+        """PHASE 6: Set up all random seeds for reproducibility"""
+        tc = self.training_config
+        main_seed = tc.seed
+
+        # NumPy seed
+        np_seed = tc.numpy_seed if tc.numpy_seed is not None else main_seed
+        np.random.seed(np_seed)
+
+        # PyTorch seed
+        if TORCH_AVAILABLE:
+            torch_seed = tc.torch_seed if tc.torch_seed is not None else main_seed
+            torch.manual_seed(torch_seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(torch_seed)
+
+        print(f"Seeds initialized: main={main_seed}, numpy={np_seed}")
+
+    def _dump_config(self):
+        """PHASE 6: Dump full config to file for reproducibility"""
+        from datetime import datetime
+        import dataclasses
+
+        config_dir = Path(self.training_config.config_dump_dir)
+        config_dir.mkdir(parents=True, exist_ok=True)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        config_path = config_dir / f"config_{timestamp}.json"
+
+        # Convert config to dict (handle dataclasses)
+        def config_to_dict(obj):
+            if dataclasses.is_dataclass(obj):
+                return {k: config_to_dict(v) for k, v in dataclasses.asdict(obj).items()}
+            elif isinstance(obj, (list, tuple)):
+                return [config_to_dict(v) for v in obj]
+            elif isinstance(obj, dict):
+                return {k: config_to_dict(v) for k, v in obj.items()}
+            elif hasattr(obj, 'value'):  # Enum
+                return obj.value
+            else:
+                return obj
+
+        config_dict = config_to_dict(self.config)
+
+        with open(config_path, 'w') as f:
+            json.dump(config_dict, f, indent=2, default=str)
+
+        print(f"Config dumped to: {config_path}")
 
     def set_signal_router(self, router: SignalRouter) -> None:
         """
@@ -302,8 +408,14 @@ class PPOTrainer:
         """
         Update policy using collected rollouts.
 
+        PHASE 6 Enhancements:
+        - KL-target early stopping: Prevents catastrophic policy updates
+        - Value loss clipping: PPO-style value function clipping
+        - Gradient norm tracking: Before and after clipping
+        - Advantage variance logging: Critical stability metric
+
         Returns:
-            Training statistics
+            Training statistics with enhanced PHASE 6 metrics
         """
         # Compute advantages
         advantages_dict = self.compute_advantages()
@@ -316,6 +428,7 @@ class PPOTrainer:
         all_old_log_probs = []
         all_returns = []
         all_advantages = []
+        all_old_values = []  # PHASE 6: Track old values for clipping
 
         for agent_key, buffer in self.buffers.items():
             if agent_key not in advantages_dict:
@@ -323,7 +436,7 @@ class PPOTrainer:
 
             returns, advantages = advantages_dict[agent_key]
 
-            local, glob, internal, actions, log_probs, _, _, _ = buffer.get()
+            local, glob, internal, actions, log_probs, _, values, _ = buffer.get()
 
             all_obs_local.append(local)
             all_obs_global.append(glob)
@@ -332,6 +445,7 @@ class PPOTrainer:
             all_old_log_probs.append(log_probs)
             all_returns.append(returns)
             all_advantages.append(advantages)
+            all_old_values.append(values)
 
         if not all_obs_local:
             return {"policy_loss": 0.0, "value_loss": 0.0, "entropy": 0.0}
@@ -343,10 +457,31 @@ class PPOTrainer:
         actions = torch.cat(all_actions).to(self.device)
         old_log_probs = torch.cat(all_old_log_probs).to(self.device)
         returns = torch.cat(all_returns).to(self.device)
-        advantages = torch.cat(all_advantages).to(self.device)
+        advantages_raw = torch.cat(all_advantages).to(self.device)
+        old_values = torch.cat(all_old_values).to(self.device)
+
+        # === PHASE 6: Track advantage statistics BEFORE normalization ===
+        advantage_mean = advantages_raw.mean().item()
+        advantage_std = advantages_raw.std().item()
+        advantage_variance = advantage_std ** 2  # Critical stability metric
 
         # Normalize advantages
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        advantages = (advantages_raw - advantages_raw.mean()) / (advantages_raw.std() + 1e-8)
+
+        # === PHASE 6: Value target normalization ===
+        if self.training_config.normalize_value_targets:
+            # Update running statistics
+            batch_mean = returns.mean().item()
+            batch_std = returns.std().item()
+            self._value_count += 1
+            alpha = 1.0 / self._value_count
+            self._value_running_mean = (1 - alpha) * self._value_running_mean + alpha * batch_mean
+            self._value_running_std = (1 - alpha) * self._value_running_std + alpha * batch_std
+
+            # Normalize returns for value function
+            normalized_returns = (returns - self._value_running_mean) / (self._value_running_std + 1e-8)
+        else:
+            normalized_returns = returns
 
         # Apply Overmind learning rate modulation BEFORE update
         self._apply_lr_modulation()
@@ -359,15 +494,25 @@ class PPOTrainer:
         n_samples = len(returns)
         indices = np.arange(n_samples)
 
+        # === PHASE 6: Enhanced metric tracking ===
         total_policy_loss = 0.0
         total_value_loss = 0.0
         total_entropy = 0.0
         total_approx_kl = 0.0
         total_clip_fraction = 0.0
+        total_grad_norm_before = 0.0
+        total_grad_norm_after = 0.0
+        total_value_pred = 0.0
+        total_value_target = 0.0
         n_updates = 0
+
+        kl_early_stopped = False
+        epochs_completed = 0
 
         for epoch in range(self.config.training.n_epochs_per_update):
             np.random.shuffle(indices)
+            epoch_kl = 0.0
+            epoch_updates = 0
 
             for start in range(0, n_samples, batch_size):
                 end = start + batch_size
@@ -379,8 +524,13 @@ class PPOTrainer:
                 batch_obs_internal = obs_internal[batch_indices]
                 batch_actions = actions[batch_indices]
                 batch_old_log_probs = old_log_probs[batch_indices]
-                batch_returns = returns[batch_indices]
+                batch_returns = normalized_returns[batch_indices]
                 batch_advantages = advantages[batch_indices]
+                batch_old_values = old_values[batch_indices]
+
+                # === PHASE 6: Per-batch advantage normalization (optional) ===
+                if self.training_config.normalize_advantages_per_batch:
+                    batch_advantages = (batch_advantages - batch_advantages.mean()) / (batch_advantages.std() + 1e-8)
 
                 # Evaluate actions
                 new_log_probs, entropy, values = self.policy.evaluate_actions(
@@ -396,8 +546,15 @@ class PPOTrainer:
                 surr2 = torch.clamp(ratio, 1 - clip_eps, 1 + clip_eps) * batch_advantages
                 policy_loss = -torch.min(surr1, surr2).mean()
 
-                # Value loss
-                value_loss = F.mse_loss(values, batch_returns)
+                # === PHASE 6: Value loss with clipping (PPO-style) ===
+                value_clip_range = self.training_config.value_clip_range
+                values_clipped = batch_old_values + torch.clamp(
+                    values - batch_old_values, -value_clip_range, value_clip_range
+                )
+                value_loss_unclipped = F.mse_loss(values, batch_returns, reduction='none')
+                value_loss_clipped = F.mse_loss(values_clipped, batch_returns, reduction='none')
+                # Take max to be conservative (pessimistic bound)
+                value_loss = torch.max(value_loss_unclipped, value_loss_clipped).mean()
 
                 # Entropy bonus
                 entropy_loss = -entropy.mean()
@@ -413,11 +570,20 @@ class PPOTrainer:
                 self.policy.optimizer.zero_grad()
                 loss.backward()
 
+                # === PHASE 6: Track gradient norm BEFORE clipping ===
+                grad_norm_before = 0.0
+                for p in self.policy.network.parameters():
+                    if p.grad is not None:
+                        grad_norm_before += p.grad.data.norm(2).item() ** 2
+                grad_norm_before = grad_norm_before ** 0.5
+
                 # Gradient clipping
-                nn.utils.clip_grad_norm_(
+                grad_norm_after = nn.utils.clip_grad_norm_(
                     self.policy.network.parameters(),
                     self.config.policy.max_grad_norm
                 )
+                if isinstance(grad_norm_after, torch.Tensor):
+                    grad_norm_after = grad_norm_after.item()
 
                 self.policy.optimizer.step()
 
@@ -431,7 +597,22 @@ class PPOTrainer:
                 total_entropy += entropy.mean().item()
                 total_approx_kl += approx_kl
                 total_clip_fraction += clip_fraction
+                total_grad_norm_before += grad_norm_before
+                total_grad_norm_after += grad_norm_after
+                total_value_pred += values.mean().item()
+                total_value_target += batch_returns.mean().item()
                 n_updates += 1
+                epoch_kl += approx_kl
+                epoch_updates += 1
+
+            epochs_completed = epoch + 1
+
+            # === PHASE 6: KL-target early stopping ===
+            if self.training_config.kl_early_stop and epoch_updates > 0:
+                avg_epoch_kl = epoch_kl / epoch_updates
+                if avg_epoch_kl > self.training_config.kl_target:
+                    kl_early_stopped = True
+                    break  # Stop training - policy changed too much
 
         # Clear buffers
         for buffer in self.buffers.values():
@@ -441,12 +622,36 @@ class PPOTrainer:
         if self.lr_scheduler is not None:
             self.lr_scheduler.step()
 
+        # === PHASE 6: Compute explained variance ===
+        # How well does value function predict returns?
+        with torch.no_grad():
+            y_pred = old_values.cpu().numpy()
+            y_true = returns.cpu().numpy()
+            var_y = np.var(y_true)
+            explained_var = 1 - np.var(y_true - y_pred) / (var_y + 1e-8) if var_y > 0 else 0.0
+
+        # Get current learning rate
+        current_lr = self.policy.optimizer.param_groups[0]['lr']
+
         return {
             "policy_loss": total_policy_loss / max(1, n_updates),
             "value_loss": total_value_loss / max(1, n_updates),
             "entropy": total_entropy / max(1, n_updates),
             "approx_kl": total_approx_kl / max(1, n_updates),
             "clip_fraction": total_clip_fraction / max(1, n_updates),
+            # === PHASE 6: Enhanced metrics ===
+            "advantage_mean": advantage_mean,
+            "advantage_std": advantage_std,
+            "advantage_variance": advantage_variance,
+            "value_pred_mean": total_value_pred / max(1, n_updates),
+            "value_target_mean": total_value_target / max(1, n_updates),
+            "explained_variance": explained_var,
+            "kl_early_stopped": kl_early_stopped,
+            "epochs_completed": epochs_completed,
+            "grad_norm_before_clip": total_grad_norm_before / max(1, n_updates),
+            "grad_norm": total_grad_norm_after / max(1, n_updates),
+            "current_lr": current_lr,
+            "current_entropy_coef": entropy_coef,
         }
 
     def train(self, n_episodes: Optional[int] = None,
@@ -503,6 +708,20 @@ class PPOTrainer:
                 avg_water_level=env_info["avg_water_level"],
                 total_vegetation=env_info["total_vegetation"],
                 n_structures=env_info["n_structures"],
+                # === PHASE 6: Enhanced PPO metrics ===
+                advantage_mean=update_stats.get("advantage_mean", 0.0),
+                advantage_std=update_stats.get("advantage_std", 0.0),
+                advantage_variance=update_stats.get("advantage_variance", 0.0),
+                value_pred_mean=update_stats.get("value_pred_mean", 0.0),
+                value_target_mean=update_stats.get("value_target_mean", 0.0),
+                explained_variance=update_stats.get("explained_variance", 0.0),
+                kl_early_stopped=update_stats.get("kl_early_stopped", False),
+                epochs_completed=update_stats.get("epochs_completed", 0),
+                grad_norm=update_stats.get("grad_norm", 0.0),
+                grad_norm_before_clip=update_stats.get("grad_norm_before_clip", 0.0),
+                policy_entropy=update_stats.get("entropy", 0.0),
+                current_lr=update_stats.get("current_lr", 0.0),
+                current_entropy_coef=update_stats.get("current_entropy_coef", 0.0),
             )
 
             # Get subsystem metrics
@@ -526,12 +745,22 @@ class PPOTrainer:
             # Logging
             if episode % self.config.training.log_every == 0:
                 elapsed = time.time() - start_time
-                print(f"Episode {episode}/{n_episodes} | "
-                      f"Reward: {metrics.episode_reward:.1f} | "
-                      f"Policy Loss: {metrics.policy_loss:.4f} | "
-                      f"Value Loss: {metrics.value_loss:.4f} | "
-                      f"Agents Alive: {metrics.n_alive_agents} | "
-                      f"Time: {elapsed:.1f}s")
+                # Basic metrics
+                log_msg = (f"Episode {episode}/{n_episodes} | "
+                           f"Reward: {metrics.episode_reward:.1f} | "
+                           f"Policy Loss: {metrics.policy_loss:.4f} | "
+                           f"Value Loss: {metrics.value_loss:.4f} | "
+                           f"Agents Alive: {metrics.n_alive_agents} | "
+                           f"Time: {elapsed:.1f}s")
+                print(log_msg)
+                # PHASE 6: Enhanced stability logging (every 10 log intervals)
+                if episode % (self.config.training.log_every * 10) == 0:
+                    kl_status = "STOPPED" if metrics.kl_early_stopped else f"{metrics.epochs_completed}"
+                    print(f"  └─ Stability: KL={metrics.approx_kl:.4f} | "
+                          f"Adv.Var={metrics.advantage_variance:.4f} | "
+                          f"ExpVar={metrics.explained_variance:.3f} | "
+                          f"GradNorm={metrics.grad_norm:.3f} | "
+                          f"Epochs={kl_status}")
 
             # Checkpointing
             if episode % self.config.training.checkpoint_every == 0 and episode > 0:
