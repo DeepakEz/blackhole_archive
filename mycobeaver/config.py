@@ -438,6 +438,7 @@ class SemanticConfig:
     # Coherence thresholds
     coherence_threshold: float = 0.7
     semantic_temperature_init: float = 1.0
+    semantic_temperature_min: float = 0.1  # Minimum temperature (exploration floor)
 
     # Pheromone for semantic graph
     semantic_pheromone_decay: float = 0.1
