@@ -112,9 +112,9 @@ class SemanticGraphVisualizer:
                       activation=vertex.activation,
                       position=vertex.position)
 
-        # Add edges
+        # Add edges (using correct attribute names: from_vertex, to_vertex)
         for eid, edge in semantic_graph.edges.items():
-            G.add_edge(edge.source, edge.target,
+            G.add_edge(edge.from_vertex, edge.to_vertex,
                       edge_type=edge.edge_type.value,
                       weight=edge.weight,
                       pheromone=edge.pheromone,

@@ -844,11 +844,11 @@ class SemanticGraph:
 
         edge = self.edges[eid]
 
-        # Remove from adjacency
-        if edge.source in self.out_edges:
-            self.out_edges[edge.source].discard(eid)
-        if edge.target in self.in_edges:
-            self.in_edges[edge.target].discard(eid)
+        # Remove from adjacency (using correct attribute names)
+        if edge.from_vertex in self.out_edges:
+            self.out_edges[edge.from_vertex].discard(eid)
+        if edge.to_vertex in self.in_edges:
+            self.in_edges[edge.to_vertex].discard(eid)
 
         # Remove edge
         del self.edges[eid]
