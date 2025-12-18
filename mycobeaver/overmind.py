@@ -422,6 +422,38 @@ class Overmind:
         self.wisdom_history.clear()
         self.step_count = 0
 
+    def update(self, observation: np.ndarray, env) -> None:
+        """
+        Update step: produce signals and apply to environment subsystems.
+
+        This method bridges the contract-compliant signal production with
+        environment subsystem configuration.
+
+        Args:
+            observation: Global observation array
+            env: Environment instance to apply signals to
+        """
+        # Produce signals through the contract-compliant interface
+        signals = self.produce_signals(observation)
+
+        # Apply signals to pheromone field
+        if hasattr(env, 'pheromone_field') and env.pheromone_field is not None:
+            env.pheromone_field.config.evaporation_rate = signals["pheromone_decay"]
+
+        # Apply signals to project manager
+        if hasattr(env, 'project_manager') and env.project_manager is not None:
+            env.project_manager.config.recruitment_decay = signals["recruitment_decay"]
+            env.project_manager.config.dance_gain = signals["dance_gain"]
+
+        # Apply signals to physarum network (adaptation rates)
+        if hasattr(env, 'physarum_network') and env.physarum_network is not None:
+            # tau and flow_exp would be used during physarum.update()
+            pass
+
+        # Apply signals to communication system
+        if hasattr(env, 'communication_system') and env.communication_system is not None:
+            env.communication_system.config.max_bandwidth_per_step = signals["comm_budget"]
+
 
 class NeuralOvermind(Overmind):
     """
