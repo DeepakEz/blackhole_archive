@@ -533,7 +533,7 @@ def plot_environment_map(policy_path: Optional[str], output_dir: str,
 
     # 1. Terrain elevation
     fig, ax = plt.subplots(figsize=(10, 10))
-    im = ax.imshow(grid.terrain_height.T, origin='lower', cmap='terrain')
+    im = ax.imshow(grid.elevation.T, origin='lower', cmap='terrain')
     plt.colorbar(im, ax=ax, label='Elevation')
     ax.set_title('Terrain Elevation Map')
     ax.set_xlabel('X')
@@ -576,7 +576,7 @@ def plot_environment_map(policy_path: Optional[str], output_dir: str,
     # 4. Agent positions and paths
     fig, ax = plt.subplots(figsize=(10, 10))
     # Background: terrain
-    ax.imshow(grid.terrain_height.T, origin='lower', cmap='terrain', alpha=0.5)
+    ax.imshow(grid.elevation.T, origin='lower', cmap='terrain', alpha=0.5)
 
     # Plot agent paths
     colors = plt.cm.tab10(np.linspace(0, 1, config.n_beavers))
@@ -610,7 +610,7 @@ def plot_environment_map(policy_path: Optional[str], output_dir: str,
     fig, axes = plt.subplots(2, 2, figsize=(14, 14))
 
     # Terrain
-    im1 = axes[0, 0].imshow(grid.terrain_height.T, origin='lower', cmap='terrain')
+    im1 = axes[0, 0].imshow(grid.elevation.T, origin='lower', cmap='terrain')
     plt.colorbar(im1, ax=axes[0, 0], shrink=0.8)
     axes[0, 0].set_title('Terrain')
 
@@ -625,7 +625,7 @@ def plot_environment_map(policy_path: Optional[str], output_dir: str,
     axes[1, 0].set_title('Vegetation')
 
     # Agents + structures overlay
-    axes[1, 1].imshow(grid.terrain_height.T, origin='lower', cmap='terrain', alpha=0.4)
+    axes[1, 1].imshow(grid.elevation.T, origin='lower', cmap='terrain', alpha=0.4)
     axes[1, 1].imshow(grid.water_depth.T, origin='lower', cmap=water_cmap, alpha=0.3)
     for i, (agent_id, path) in enumerate(agent_paths.items()):
         if len(path) > 1:
