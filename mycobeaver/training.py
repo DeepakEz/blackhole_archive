@@ -766,6 +766,14 @@ class PPOTrainer:
             if episode % self.config.training.checkpoint_every == 0 and episode > 0:
                 self.save_checkpoint(episode)
 
+        # === Save final checkpoint (ensures last episode is always saved) ===
+        final_episode = n_episodes - 1  # 0-indexed, so episode 999 for 1000 episodes
+        # Only save if we haven't just saved (avoid duplicate)
+        if final_episode % self.config.training.checkpoint_every != 0:
+            self.save_checkpoint(final_episode)
+        # Also save a "final" checkpoint for easy access
+        self.save_checkpoint_final()
+
         total_time = time.time() - start_time
         print(f"\nTraining complete in {total_time:.1f}s")
         print(f"Final reward: {self.history.metrics[-1].episode_reward:.1f}")
@@ -799,6 +807,45 @@ class PPOTrainer:
             }, f, indent=2)
 
         print(f"Saved checkpoint at episode {episode}")
+
+    def save_checkpoint_final(self):
+        """Save final training checkpoint with complete history"""
+        checkpoint_dir = Path(self.config.training.checkpoint_dir)
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+        # Save policy as "final"
+        policy_path = checkpoint_dir / "policy_final.pt"
+        self.policy.save(str(policy_path))
+
+        # Save complete training history
+        history_path = checkpoint_dir / "training_history.json"
+        with open(history_path, 'w') as f:
+            json.dump({
+                "total_episodes": len(self.history.metrics),
+                "total_steps": self.total_steps,
+                "final_reward": self.history.metrics[-1].episode_reward if self.history.metrics else 0,
+                "final_survival": self.history.metrics[-1].n_alive_agents if self.history.metrics else 0,
+                "metrics": [
+                    {
+                        "episode": m.episode,
+                        "reward": m.episode_reward,
+                        "policy_loss": m.policy_loss,
+                        "value_loss": m.value_loss,
+                        "entropy": m.entropy,
+                        "approx_kl": m.approx_kl,
+                        "n_alive_agents": m.n_alive_agents,
+                        "n_structures": m.n_structures,
+                        "avg_water_level": m.avg_water_level,
+                        "total_vegetation": m.total_vegetation,
+                        "explained_variance": m.explained_variance,
+                        "advantage_variance": m.advantage_variance,
+                    }
+                    for m in self.history.metrics
+                ]
+            }, f, indent=2)
+
+        print(f"Saved final checkpoint: {policy_path}")
+        print(f"Saved training history: {history_path}")
 
     def load_checkpoint(self, path: str):
         """Load training checkpoint"""
