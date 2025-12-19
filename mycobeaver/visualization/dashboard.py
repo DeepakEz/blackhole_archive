@@ -13,7 +13,8 @@ Shows all visualization components in a unified interface:
 - Time-series plots
 
 Usage:
-    # Run as standalone Streamlit app
+    # Run from parent directory
+    cd C:\\
     streamlit run mycobeaver/visualization/dashboard.py
 
     # Or integrate programmatically
@@ -31,6 +32,28 @@ import threading
 import time
 import io
 import base64
+import sys
+import os
+
+# Fix imports for both module and direct execution
+if __name__ == "__main__" or "streamlit" in sys.modules:
+    # Running directly or via streamlit - add parent to path
+    _viz_dir = os.path.dirname(os.path.abspath(__file__))
+    _mycobeaver_dir = os.path.dirname(_viz_dir)
+    _parent_dir = os.path.dirname(_mycobeaver_dir)
+    if _parent_dir not in sys.path:
+        sys.path.insert(0, _parent_dir)
+
+    from mycobeaver.visualization.grid import GridVisualizer
+    from mycobeaver.visualization.networks import SemanticGraphVisualizer
+    from mycobeaver.visualization.cognition import CommunicationVisualizer
+    from mycobeaver.visualization.thermodynamics import ThermodynamicsVisualizer
+else:
+    # Running as module import
+    from .grid import GridVisualizer
+    from .networks import SemanticGraphVisualizer
+    from .cognition import CommunicationVisualizer
+    from .thermodynamics import ThermodynamicsVisualizer
 
 if TYPE_CHECKING:
     from ..environment import MycoBeaverEnv
@@ -42,12 +65,6 @@ try:
 except ImportError:
     HAS_STREAMLIT = False
     st = None
-
-# Import our visualization modules
-from .grid import GridVisualizer
-from .networks import SemanticGraphVisualizer
-from .cognition import CommunicationVisualizer
-from .thermodynamics import ThermodynamicsVisualizer
 
 
 @dataclass
