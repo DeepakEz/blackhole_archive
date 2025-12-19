@@ -214,9 +214,28 @@ def create_dashboard_app():
 
     # Check if environment is available in session state
     if 'env' not in st.session_state:
-        st.warning("No environment loaded. Please initialize the environment first.")
-        st.code("""
-# Example: Initialize environment
+        st.info("🔄 No environment loaded. Creating demo environment...")
+
+        # Auto-create demo environment
+        try:
+            from mycobeaver.config import SimulationConfig, create_default_config
+            from mycobeaver.environment import MycoBeaverEnv
+
+            # Create small demo config
+            config = create_default_config()
+            config.grid.grid_size = 32
+            config.n_beavers = 5
+
+            env = MycoBeaverEnv(config)
+            env.reset()
+            st.session_state.env = env
+            st.session_state.demo_mode = True
+            st.success("✅ Demo environment created! Use sidebar to step simulation.")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Failed to create demo environment: {e}")
+            st.code("""
+# Manual setup:
 from mycobeaver.config import SimulationConfig
 from mycobeaver.environment import MycoBeaverEnv
 
@@ -224,14 +243,29 @@ config = SimulationConfig()
 env = MycoBeaverEnv(config)
 env.reset()
 
-# Then pass to dashboard
 import streamlit as st
 st.session_state.env = env
-        """)
-        return
+            """)
+            return
 
     env = st.session_state.env
     dashboard = LiveDashboard(env)
+
+    # Demo mode controls
+    if st.session_state.get('demo_mode', False):
+        st.sidebar.header("🎮 Demo Controls")
+        step_count = st.sidebar.number_input("Steps per click", 1, 100, 10)
+        if st.sidebar.button("▶️ Step Simulation"):
+            import numpy as np
+            for _ in range(step_count):
+                # Random actions for demo
+                actions = {f"agent_{i}": np.random.randint(0, 16)
+                          for i in range(env.config.n_beavers)}
+                env.step(actions)
+            st.rerun()
+        if st.sidebar.button("🔄 Reset Environment"):
+            env.reset()
+            st.rerun()
 
     # Auto-refresh option
     auto_refresh = st.sidebar.checkbox("Auto Refresh", value=True)
