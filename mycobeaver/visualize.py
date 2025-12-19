@@ -512,10 +512,11 @@ def plot_environment_map(policy_path: Optional[str], output_dir: str,
             actions = {f"agent_{i}": np.random.randint(0, config.policy.n_actions)
                       for i in range(config.n_beavers)}
 
-        # Track agent positions
+        # Track agent positions (position is a (y, x) tuple)
         for i, agent in enumerate(env.agents):
             if agent.alive:
-                agent_paths[f"agent_{i}"].append((agent.x, agent.y))
+                y, x = agent.position
+                agent_paths[f"agent_{i}"].append((x, y))
 
         obs, rewards, terminated, truncated, info = env.step(actions)
         if terminated or truncated:
@@ -587,15 +588,12 @@ def plot_environment_map(policy_path: Optional[str], output_dir: str,
             ax.scatter(xs[-1], ys[-1], color=colors[i], s=100,
                       edgecolor='black', linewidth=2, zorder=10)
 
-    # Plot structures
-    structure_x = []
-    structure_y = []
-    for s in env.structures.values():
-        structure_x.append(s.x)
-        structure_y.append(s.y)
-    if structure_x:
-        ax.scatter(structure_x, structure_y, marker='s', s=50,
-                  c='brown', edgecolor='black', label='Structures')
+    # Plot structures (from dam_permeability grid)
+    structure_mask = grid.dam_permeability < 0.9
+    structure_coords = np.where(structure_mask)
+    if len(structure_coords[0]) > 0:
+        ax.scatter(structure_coords[0], structure_coords[1], marker='s', s=30,
+                  c='brown', edgecolor='black', alpha=0.7, label='Structures')
 
     ax.set_title('Agent Paths and Structures')
     ax.set_xlabel('X')
@@ -634,8 +632,8 @@ def plot_environment_map(policy_path: Optional[str], output_dir: str,
             xs, ys = zip(*path)
             axes[1, 1].plot(xs, ys, color=colors[i], alpha=0.5, linewidth=1)
             axes[1, 1].scatter(xs[-1], ys[-1], color=colors[i], s=80, edgecolor='black')
-    if structure_x:
-        axes[1, 1].scatter(structure_x, structure_y, marker='s', s=40, c='brown', edgecolor='black')
+    if len(structure_coords[0]) > 0:
+        axes[1, 1].scatter(structure_coords[0], structure_coords[1], marker='s', s=25, c='brown', edgecolor='black', alpha=0.7)
     axes[1, 1].set_title('Agents & Infrastructure')
 
     fig.suptitle('MycoBeaver Environment State', fontsize=16)
@@ -649,10 +647,11 @@ def plot_environment_map(policy_path: Optional[str], output_dir: str,
 
     env.close()
 
+    n_structures = np.sum(structure_mask)
     print(f"\nEnvironment summary:")
     print(f"  Grid size: {config.grid.grid_size}x{config.grid.grid_size}")
     print(f"  Agents: {config.n_beavers}")
-    print(f"  Structures built: {len(env.structures)}")
+    print(f"  Structures built: {n_structures}")
     print(f"  Steps simulated: {n_steps}")
 
 
