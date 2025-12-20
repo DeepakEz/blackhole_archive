@@ -271,33 +271,51 @@ class OvermindConfig:
 @dataclass
 class RewardConfig:
     """Reward structure configuration"""
-    # Survival rewards
-    alive_reward_per_step: float = 0.1
-    death_penalty: float = -100.0
+    # === REBALANCED REWARDS (Fix survival >> building imbalance) ===
+
+    # Survival rewards (REDUCED to not dominate)
+    alive_reward_per_step: float = 0.01  # Was 0.1 - reduced 10x
+    death_penalty: float = -50.0  # Was -100.0 - reduced to not discourage risk
 
     # Hydrological stability
-    flood_penalty_per_cell: float = -0.5
-    drought_penalty_per_cell: float = -0.5
+    flood_penalty_per_cell: float = -0.1  # Was -0.5 - reduced
+    drought_penalty_per_cell: float = -0.1  # Was -0.5 - reduced
     stability_bonus: float = 1.0
 
     # Habitat rewards
     vegetation_reward_multiplier: float = 0.1
     wetland_cell_bonus: float = 0.05  # Water + vegetation
 
-    # Project rewards
-    dam_completion_bonus: float = 50.0
-    lodge_completion_bonus: float = 30.0
+    # Project rewards (INCREASED significantly)
+    dam_completion_bonus: float = 100.0  # Was 50.0 - doubled
+    lodge_completion_bonus: float = 60.0  # Was 30.0 - doubled
 
     # Resource rewards
     forage_reward: float = 0.5
-    build_action_reward: float = 1.0
+    build_action_reward: float = 10.0  # Was 1.0 - increased 10x
+
+    # === NEW REWARDS (Fix missing incentives) ===
+
+    # Carrying wood reward (with proximity bonus)
+    carry_wood_reward: float = 0.5  # Reward for picking up wood
+    carry_wood_proximity_bonus: float = 1.0  # Extra reward when near build site
+    carry_wood_distance_threshold: float = 5.0  # Distance for proximity bonus
+
+    # Exploration reward (diminishing returns)
+    exploration_reward: float = 1.0  # Base reward for visiting new cells
+    exploration_decay: float = 0.5  # Multiplier for revisiting cells
+
+    # Personal structure credit (fix free-rider problem)
+    personal_structure_bonus: float = 15.0  # Reward for structures YOU built
+    structure_proximity_bonus: float = 0.5  # Reward for being near ANY structure
+    structure_proximity_range: float = 10.0  # Range for proximity bonus
 
     # Efficiency penalty
     wasted_material_penalty: float = -1.0
 
-    # Global vs individual balance
-    individual_weight: float = 0.3  # α
-    global_weight: float = 0.7  # β
+    # Global vs individual balance (REBALANCED)
+    individual_weight: float = 0.5  # α - Was 0.3, increased for personal credit
+    global_weight: float = 0.5  # β - Was 0.7, reduced to fix free-rider
 
 
 @dataclass

@@ -210,6 +210,22 @@ class AgentState:
     # Movement tracking
     previous_position: Optional[Tuple[int, int]] = None
 
+    # === REWARD FIX: Personal tracking (fix free-rider problem) ===
+    structures_built_by_me: int = 0  # Count of structures this agent built
+    cells_visited: Optional[set] = None  # Set of (y, x) cells visited for exploration reward
+
+    def get_visit_count(self, position: Tuple[int, int]) -> int:
+        """Get how many times this cell was visited (for diminishing exploration reward)"""
+        if self.cells_visited is None:
+            self.cells_visited = set()
+        return 1 if position in self.cells_visited else 0
+
+    def record_visit(self, position: Tuple[int, int]):
+        """Record visiting a cell"""
+        if self.cells_visited is None:
+            self.cells_visited = set()
+        self.cells_visited.add(position)
+
     # === PHASE 2: Information Energy ===
     # Info energy is a first-class resource that constrains information actions
     info_energy: float = 100.0  # Current info energy level
@@ -359,14 +375,12 @@ class MycoBeaverEnv(gym.Env):
         return observations, info
 
     def _initialize_grid(self):
-        """Initialize grid state arrays"""
+        """Initialize grid state arrays with improved procedural generation"""
         size = self.config.grid.grid_size
 
-        # Generate elevation (example: gradient with noise)
-        base_elevation = np.linspace(0.5, 0.0, size).reshape(-1, 1)
-        base_elevation = np.tile(base_elevation, (1, size))
-        elevation_noise = self.np_random.uniform(-0.1, 0.1, (size, size))
-        elevation = base_elevation + elevation_noise
+        # === IMPROVED TERRAIN GENERATION ===
+        # Use multi-octave noise for natural-looking terrain
+        elevation = self._generate_terrain(size)
 
         # If stream location specified, create lower channel
         if self.config.stream_location:
@@ -375,20 +389,13 @@ class MycoBeaverEnv(gym.Env):
                 for j in range(min(x1, x2), max(x1, x2) + 1):
                     elevation[i, j] -= 0.2
 
-        # Initialize water (some initial level, higher in low elevation)
-        water_depth = np.where(
-            elevation < 0.3,
-            self.config.initial_water_level,
-            0.0
-        )
+        # === IMPROVED WATER GENERATION ===
+        # Water collects in valleys (low elevation areas)
+        water_depth = self._generate_water(size, elevation)
 
-        # Initialize vegetation (denser away from water)
-        vegetation = self.np_random.uniform(
-            0.3 * self.config.initial_vegetation_density,
-            self.config.initial_vegetation_density,
-            (size, size)
-        )
-        vegetation = np.where(water_depth > 0.1, 0.1 * vegetation, vegetation)
+        # === IMPROVED VEGETATION GENERATION ===
+        # Vegetation in clusters (creates exploration pressure)
+        vegetation = self._generate_vegetation_clusters(size, water_depth)
 
         # Initialize soil moisture
         soil_moisture = 0.5 * np.ones((size, size))
@@ -419,6 +426,129 @@ class MycoBeaverEnv(gym.Env):
             lodge_map=lodge_map,
             agent_positions=agent_positions
         )
+
+    def _generate_terrain(self, size: int) -> np.ndarray:
+        """Generate natural-looking terrain using multi-octave noise"""
+        # Create base gradient (hills on one side, valley on other)
+        x = np.linspace(0, 1, size)
+        y = np.linspace(0, 1, size)
+        xx, yy = np.meshgrid(x, y)
+
+        # Multi-octave noise approximation (without external library)
+        elevation = np.zeros((size, size))
+
+        # Octave 1: Large features
+        scale1 = 4
+        noise1 = self._smooth_noise(size, scale1)
+        elevation += 0.5 * noise1
+
+        # Octave 2: Medium features
+        scale2 = 8
+        noise2 = self._smooth_noise(size, scale2)
+        elevation += 0.25 * noise2
+
+        # Octave 3: Small features
+        scale3 = 16
+        noise3 = self._smooth_noise(size, scale3)
+        elevation += 0.125 * noise3
+
+        # Add gradient to create consistent slope (water flows downhill)
+        gradient = 0.3 * (1.0 - xx) + 0.1 * yy
+        elevation += gradient
+
+        # Normalize to [0, 1]
+        elevation = (elevation - elevation.min()) / (elevation.max() - elevation.min() + 1e-8)
+
+        return elevation
+
+    def _smooth_noise(self, size: int, scale: int) -> np.ndarray:
+        """Generate smooth noise at given scale"""
+        # Generate random values at grid points
+        grid_size = max(2, size // scale + 1)
+        grid = self.np_random.random((grid_size, grid_size))
+
+        # Interpolate to full size using bilinear interpolation
+        from scipy.ndimage import zoom
+        smooth = zoom(grid, size / grid_size, order=1)
+
+        # Ensure correct size
+        if smooth.shape[0] != size or smooth.shape[1] != size:
+            smooth = smooth[:size, :size]
+            if smooth.shape[0] < size:
+                smooth = np.pad(smooth, ((0, size - smooth.shape[0]), (0, 0)), mode='edge')
+            if smooth.shape[1] < size:
+                smooth = np.pad(smooth, ((0, 0), (0, size - smooth.shape[1])), mode='edge')
+
+        return smooth
+
+    def _generate_water(self, size: int, elevation: np.ndarray) -> np.ndarray:
+        """Generate water that collects in valleys"""
+        # Water accumulates in low elevation areas
+        water_threshold = np.percentile(elevation, 30)  # Bottom 30% elevation gets water
+
+        # Base water depth inversely proportional to elevation
+        water_depth = np.zeros((size, size))
+
+        # Add water in valleys
+        valley_mask = elevation < water_threshold
+        water_depth[valley_mask] = (water_threshold - elevation[valley_mask]) * 10.0
+
+        # Add some water sources (springs) at random high points
+        n_springs = 3
+        for _ in range(n_springs):
+            sy, sx = self.np_random.integers(0, size, 2)
+            # Create small pond around spring
+            for dy in range(-2, 3):
+                for dx in range(-2, 3):
+                    ny, nx = sy + dy, sx + dx
+                    if 0 <= ny < size and 0 <= nx < size:
+                        dist = np.sqrt(dy**2 + dx**2)
+                        water_depth[ny, nx] += max(0, 2.0 - dist)
+
+        # Smooth water slightly for natural look
+        from scipy.ndimage import gaussian_filter
+        water_depth = gaussian_filter(water_depth, sigma=1.0)
+
+        # Clamp water depth
+        water_depth = np.clip(water_depth, 0.0, self.config.initial_water_level * 2)
+
+        return water_depth
+
+    def _generate_vegetation_clusters(self, size: int, water_depth: np.ndarray) -> np.ndarray:
+        """Generate vegetation in clusters (creates exploration pressure)"""
+        vegetation = np.zeros((size, size))
+
+        # Create 5-8 vegetation clusters
+        n_clusters = self.np_random.integers(5, 9)
+
+        for _ in range(n_clusters):
+            # Random cluster center
+            cy, cx = self.np_random.integers(5, size - 5, 2)
+            cluster_radius = self.np_random.integers(5, 12)
+            cluster_density = self.np_random.uniform(0.6, 1.0)
+
+            # Add vegetation in cluster (Gaussian falloff)
+            for dy in range(-cluster_radius, cluster_radius + 1):
+                for dx in range(-cluster_radius, cluster_radius + 1):
+                    ny, nx = cy + dy, cx + dx
+                    if 0 <= ny < size and 0 <= nx < size:
+                        dist = np.sqrt(dy**2 + dx**2)
+                        if dist <= cluster_radius:
+                            # Gaussian falloff
+                            amount = cluster_density * np.exp(-dist**2 / (2 * (cluster_radius/2)**2))
+                            vegetation[ny, nx] = max(vegetation[ny, nx], amount)
+
+        # Add base sparse vegetation everywhere
+        base_veg = self.np_random.uniform(0.05, 0.15, (size, size))
+        vegetation = np.maximum(vegetation, base_veg)
+
+        # Reduce vegetation in water
+        vegetation = np.where(water_depth > 0.5, 0.1 * vegetation, vegetation)
+
+        # Normalize to [0, 1]
+        vegetation = np.clip(vegetation, 0.0, 1.0)
+
+        return vegetation
 
     def _initialize_agents(self):
         """Initialize beaver agents"""
@@ -620,6 +750,34 @@ class MycoBeaverEnv(gym.Env):
             self.grid_state.agent_positions[new_y, new_x] += 1
             agent.position = (new_y, new_x)
 
+            # REWARD FIX: Exploration reward with diminishing returns
+            new_pos = (new_y, new_x)
+            visit_count = agent.get_visit_count(new_pos)
+            if visit_count == 0:
+                # First visit - full exploration reward
+                reward += self.config.reward.exploration_reward
+            else:
+                # Revisit - diminished reward
+                reward += self.config.reward.exploration_reward * (
+                    self.config.reward.exploration_decay ** visit_count
+                )
+            agent.record_visit(new_pos)
+
+            # REWARD FIX: Carrying wood proximity bonus
+            if agent.carrying_wood > 0:
+                # Check if near structures (build sites)
+                structure_mask = self.grid_state.dam_permeability < 0.9
+                if np.any(structure_mask):
+                    # Find nearest structure
+                    struct_coords = np.argwhere(structure_mask)
+                    distances = np.sqrt(
+                        (struct_coords[:, 0] - new_y)**2 +
+                        (struct_coords[:, 1] - new_x)**2
+                    )
+                    min_dist = distances.min()
+                    if min_dist < self.config.reward.carry_wood_distance_threshold:
+                        reward += self.config.reward.carry_wood_proximity_bonus
+
             # Energy cost
             agent.energy -= config.move_energy_cost
 
@@ -648,18 +806,25 @@ class MycoBeaverEnv(gym.Env):
 
         elif action == ActionType.BUILD_DAM:
             # Build/reinforce dam at current location
-            if agent.carrying_wood > 0 and agent.current_project is not None:
+            # REWARD FIX: Relaxed project requirement - agents can build freely
+            if agent.carrying_wood > 0:
                 old_permeability = self.grid_state.dam_permeability[y, x]
-                self.grid_state.dam_permeability[y, x] = max(
-                    0.0, old_permeability - self.config.grid.dam_build_amount
-                )
+                new_permeability = max(0.0, old_permeability - self.config.grid.dam_build_amount)
+                self.grid_state.dam_permeability[y, x] = new_permeability
                 agent.carrying_wood -= 1
 
-                # Update project progress
-                if self.config.training.use_projects:
+                # REWARD FIX: Track personal contribution (fixes free-rider)
+                agent.structures_built_by_me += 1
+
+                # Update project progress if project system enabled
+                if self.config.training.use_projects and agent.current_project is not None:
                     self.project_manager.add_progress(agent.current_project, 1)
 
+                # Base build reward
                 reward += self.config.reward.build_action_reward
+
+                # REWARD FIX: Personal structure bonus
+                reward += self.config.reward.personal_structure_bonus
             agent.energy -= config.build_energy_cost
 
         elif action == ActionType.BUILD_LODGE:
@@ -679,6 +844,8 @@ class MycoBeaverEnv(gym.Env):
                 if veg > 0.2:
                     harvested[y, x] += 0.1
                     agent.carrying_wood += 1
+                    # REWARD FIX: Reward for picking up wood
+                    reward += self.config.reward.carry_wood_reward
 
         elif action == ActionType.DROP_RESOURCE:
             # Drop carried resource
@@ -861,6 +1028,11 @@ class MycoBeaverEnv(gym.Env):
             self.config.grid.grid_size ** 2
         )
 
+        # REWARD FIX: Global structure density bonus
+        # Reward the colony for total infrastructure (encourages coordination)
+        n_structures = np.sum(self.grid_state.dam_permeability < 0.9)
+        reward += n_structures * 0.5  # Small bonus per structure cell
+
         # Project completions
         if self.config.training.use_projects:
             completions = self.project_manager.check_completions(self.grid_state)
@@ -888,11 +1060,29 @@ class MycoBeaverEnv(gym.Env):
         alpha = self.config.reward.individual_weight
         beta = self.config.reward.global_weight
 
-        # Per-agent survival rewards
+        # REWARD FIX: Find all structure locations for proximity bonus
+        structure_mask = self.grid_state.dam_permeability < 0.9
+        structure_coords = np.argwhere(structure_mask) if np.any(structure_mask) else None
+
+        # Per-agent survival rewards and proximity bonuses
         for agent in self.agents:
             key = f"agent_{agent.id}"
             if agent.alive:
                 agent_rewards[key] += self.config.reward.alive_reward_per_step
+
+                # REWARD FIX: Structure proximity bonus (rewards being near ANY structure)
+                if structure_coords is not None and len(structure_coords) > 0:
+                    y, x = agent.position
+                    distances = np.sqrt(
+                        (structure_coords[:, 0] - y)**2 +
+                        (structure_coords[:, 1] - x)**2
+                    )
+                    # Count structures within range
+                    nearby_count = np.sum(distances < self.config.reward.structure_proximity_range)
+                    if nearby_count > 0:
+                        # Diminishing returns for many nearby structures
+                        proximity_bonus = self.config.reward.structure_proximity_bonus * np.sqrt(nearby_count)
+                        agent_rewards[key] += proximity_bonus
             else:
                 agent_rewards[key] += self.config.reward.death_penalty
 
