@@ -817,28 +817,34 @@ class PPOTrainer:
         policy_path = checkpoint_dir / "policy_final.pt"
         self.policy.save(str(policy_path))
 
+        # Helper to convert numpy types to Python native types
+        def to_native(val):
+            if hasattr(val, 'item'):
+                return val.item()
+            return val
+
         # Save complete training history
         history_path = checkpoint_dir / "training_history.json"
         with open(history_path, 'w') as f:
             json.dump({
                 "total_episodes": len(self.history.metrics),
-                "total_steps": self.total_steps,
-                "final_reward": self.history.metrics[-1].episode_reward if self.history.metrics else 0,
-                "final_survival": self.history.metrics[-1].n_alive_agents if self.history.metrics else 0,
+                "total_steps": int(self.total_steps),
+                "final_reward": float(self.history.metrics[-1].episode_reward) if self.history.metrics else 0,
+                "final_survival": int(self.history.metrics[-1].n_alive_agents) if self.history.metrics else 0,
                 "metrics": [
                     {
-                        "episode": m.episode,
-                        "reward": m.episode_reward,
-                        "policy_loss": m.policy_loss,
-                        "value_loss": m.value_loss,
-                        "entropy": m.entropy,
-                        "approx_kl": m.approx_kl,
-                        "n_alive_agents": m.n_alive_agents,
-                        "n_structures": m.n_structures,
-                        "avg_water_level": m.avg_water_level,
-                        "total_vegetation": m.total_vegetation,
-                        "explained_variance": m.explained_variance,
-                        "advantage_variance": m.advantage_variance,
+                        "episode": int(m.episode),
+                        "reward": float(m.episode_reward),
+                        "policy_loss": float(m.policy_loss),
+                        "value_loss": float(m.value_loss),
+                        "entropy": float(m.entropy),
+                        "approx_kl": float(m.approx_kl),
+                        "n_alive_agents": int(m.n_alive_agents),
+                        "n_structures": int(m.n_structures),
+                        "avg_water_level": float(m.avg_water_level),
+                        "total_vegetation": float(m.total_vegetation),
+                        "explained_variance": float(m.explained_variance),
+                        "advantage_variance": float(m.advantage_variance),
                     }
                     for m in self.history.metrics
                 ]
