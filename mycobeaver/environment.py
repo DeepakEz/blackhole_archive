@@ -18,7 +18,12 @@ from gymnasium import spaces
 
 from .config import (
     SimulationConfig, GridConfig, AgentConfig, ActionType, AgentRole,
-    ProjectType, ProjectStatus
+    ProjectType, ProjectStatus, MemoryConfig
+)
+from .semantic_memory import (
+    SemanticMemory, MemoryConfig as MemoryConfigClass, EventType,
+    create_flood_event, create_dam_break_event, create_resource_event,
+    create_danger_event, create_build_success_event
 )
 
 
@@ -901,6 +906,7 @@ class MycoBeaverEnv(gym.Env):
         self.physarum_network = None
         self.overmind = None
         self.semantic_system = None  # PHASE 3: Colony semantic system
+        self.semantic_memory = None  # Event-based memory with kNN retrieval
 
         # Grid state
         self.grid_state: Optional[GridState] = None
@@ -1263,6 +1269,22 @@ class MycoBeaverEnv(gym.Env):
             self.config.info_costs,
         )
 
+        # Initialize event-based semantic memory
+        if self.config.memory.enable_memory:
+            grid_size = (self.config.grid.grid_size, self.config.grid.grid_size)
+            memory_config = MemoryConfigClass(
+                max_events=self.config.memory.max_events,
+                max_events_per_type=self.config.memory.max_events_per_type,
+                embedding_dim=self.config.memory.embedding_dim,
+                decay_halflife=self.config.memory.decay_halflife,
+                min_relevance=self.config.memory.min_relevance,
+                default_k=self.config.memory.default_k,
+                consolidation_interval=self.config.memory.consolidation_interval,
+            )
+            self.semantic_memory = SemanticMemory(memory_config, grid_size)
+        else:
+            self.semantic_memory = None
+
     def step(self, actions: Dict[str, int]) -> Tuple[Dict, Dict, bool, bool, Dict]:
         """
         Execute one environment step.
@@ -1467,6 +1489,16 @@ class MycoBeaverEnv(gym.Env):
                 agent.carrying_wood = min(config.max_carry_wood, agent.carrying_wood + 1)
                 reward += self.config.reward.forage_reward
 
+                # === SEMANTIC MEMORY: Record resource discovery ===
+                if self.semantic_memory is not None and veg_available > 0.5:
+                    # Only record high-value resource finds
+                    create_resource_event(
+                        self.semantic_memory,
+                        location=(y, x),
+                        amount=veg_available,
+                        resource_type="vegetation"
+                    )
+
                 # SHAPING: Extra reward for acquiring wood when near water (intent to build)
                 if self.grid_state.water_depth[y, x] > 0.1:
                     reward += self.config.reward.forage_reward * 0.5  # Water proximity bonus
@@ -1522,6 +1554,16 @@ class MycoBeaverEnv(gym.Env):
                 if total_structures < 10:  # Extra bonus for first 10 structures
                     early_bonus = self.config.reward.build_action_reward * (1.0 - total_structures / 10)
                     reward += early_bonus
+
+                # === SEMANTIC MEMORY: Record successful build ===
+                if self.semantic_memory is not None and is_new_dam:
+                    effectiveness = 1.0 if strategic_placement else 0.5
+                    create_build_success_event(
+                        self.semantic_memory,
+                        location=(y, x),
+                        structure_type="dam",
+                        effectiveness=effectiveness
+                    )
             agent.energy -= config.build_energy_cost
 
         elif action == ActionType.BUILD_LODGE:
@@ -1686,6 +1728,20 @@ class MycoBeaverEnv(gym.Env):
             agent.alive = False
             self.grid_state.agent_positions[y, x] -= 1
 
+            # === SEMANTIC MEMORY: Record danger zone ===
+            if self.semantic_memory is not None:
+                from .semantic_memory import EventType
+                self.semantic_memory.store_event(
+                    EventType.AGENT_DEATH,
+                    location=(y, x),
+                    severity=1.0,
+                    metadata={
+                        "agent_id": agent.id,
+                        "cause": "energy_depletion",
+                        "water_depth": float(self.grid_state.water_depth[y, x]),
+                    }
+                )
+
     def _update_environment_dynamics(self, dt: float):
         """Update water and soil"""
         # Generate rainfall
@@ -1718,6 +1774,17 @@ class MycoBeaverEnv(gym.Env):
             flood_water = self.structure_physics.handle_dam_breaks(self.grid_state, broken_dams)
             self.grid_state.water_depth = np.clip(flood_water, 0.0, 10.0)
 
+            # === SEMANTIC MEMORY: Record dam break events ===
+            if self.semantic_memory is not None:
+                for y, x in broken_dams:
+                    integrity = self.grid_state.dam_integrity[y, x]
+                    create_dam_break_event(
+                        self.semantic_memory,
+                        location=(y, x),
+                        dam_id=y * self.config.grid.grid_size + x,
+                        integrity_at_break=integrity
+                    )
+
         # Update soil moisture
         new_moisture = self.vegetation_engine.update_soil_moisture(self.grid_state, dt)
         self.grid_state.soil_moisture = new_moisture
@@ -1740,6 +1807,27 @@ class MycoBeaverEnv(gym.Env):
         # Scan environment and create new tasks every 10 steps
         if self.current_step % 10 == 0:
             self.task_allocation.scan_and_create_tasks(self.grid_state, self.current_step)
+
+        # === SEMANTIC MEMORY: Step update and flood detection ===
+        if self.semantic_memory is not None:
+            self.semantic_memory.step(self.current_step)
+
+            # Detect and record flood events (every 5 steps to avoid spam)
+            if self.current_step % 5 == 0:
+                flood_threshold = 2.0
+                flood_mask = self.grid_state.water_depth > flood_threshold
+                if np.any(flood_mask):
+                    # Find most severe flood locations
+                    flood_locs = np.argwhere(flood_mask)
+                    for loc in flood_locs[:5]:  # Limit to 5 most significant
+                        y, x = loc
+                        water_level = self.grid_state.water_depth[y, x]
+                        create_flood_event(
+                            self.semantic_memory,
+                            location=(y, x),
+                            water_level=water_level,
+                            affected_area=1
+                        )
 
     def _update_subsystems(self, dt: float):
         """
@@ -2187,6 +2275,15 @@ class MycoBeaverEnv(gym.Env):
             "tasks_available": task_metrics["available_tasks"],
             "tasks_claimed": task_metrics["claimed_tasks"],
         })
+
+        # Semantic memory metrics
+        if self.semantic_memory is not None:
+            memory_stats = self.semantic_memory.get_statistics()
+            info.update({
+                "memory_total_events": memory_stats["total_events"],
+                "memory_retrievals": memory_stats["total_retrievals"],
+                "memory_retrieval_accuracy": memory_stats["retrieval_accuracy"],
+            })
 
         # === PHASE 3: Time-scale separation tracking ===
         # Only include if tracking is enabled (useful for debugging/logging)

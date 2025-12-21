@@ -315,6 +315,35 @@ class OvermindConfig:
 
 
 @dataclass
+class MemoryConfig:
+    """Semantic memory configuration"""
+    # Capacity
+    max_events: int = 1000
+    max_events_per_type: int = 200
+
+    # Embedding dimensions
+    embedding_dim: int = 16
+
+    # Time decay
+    decay_halflife: int = 500  # Steps until relevance halves
+    min_relevance: float = 0.01  # Below this, event can be pruned
+
+    # Retrieval
+    default_k: int = 5  # Default number of neighbors for kNN
+    location_weight: float = 0.4  # Weight for spatial similarity
+    time_weight: float = 0.3  # Weight for temporal similarity
+    type_weight: float = 0.3  # Weight for type matching
+
+    # Consolidation
+    consolidation_interval: int = 100  # Steps between consolidation
+
+    # Memory integration
+    enable_memory: bool = True  # Toggle memory system
+    overmind_query_interval: int = 10  # How often Overmind queries memory
+    agent_query_radius: int = 5  # Radius for agent memory queries
+
+
+@dataclass
 class RewardConfig:
     """Reward structure configuration"""
     # === REBALANCED REWARDS (Fix survival >> building imbalance) ===
@@ -589,6 +618,7 @@ class SimulationConfig:
     # Cognitive architecture
     semantic: SemanticConfig = field(default_factory=SemanticConfig)
     communication: CommunicationConfig = field(default_factory=CommunicationConfig)
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
 
     # PHASE 3: Time-scale separation
     time_scales: TimeScaleConfig = field(default_factory=TimeScaleConfig)
