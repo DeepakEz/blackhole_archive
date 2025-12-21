@@ -12,11 +12,13 @@ import numpy as np
 
 
 class AgentRole(Enum):
-    """Beaver agent behavioral roles"""
-    SCOUT = "scout"
-    WORKER = "worker"
-    GUARDIAN = "guardian"
-    BUILDER = "builder"
+    """Beaver agent behavioral roles with specialized rewards"""
+    SCOUT = "scout"      # Exploration/coverage specialist
+    WORKER = "worker"    # General purpose
+    GUARDIAN = "guardian"  # Stay near lodge, protect
+    BUILDER = "builder"   # Structure construction
+    HAULER = "hauler"     # Resource delivery
+    MAINTAINER = "maintainer"  # Dam repair specialist
 
 
 class ActionType(Enum):
@@ -37,6 +39,9 @@ class ActionType(Enum):
     DROP_RESOURCE = 13
     REST = 14
     ADVERTISE_PROJECT = 15
+    REPAIR_DAM = 16  # Repair/reinforce existing dam
+    PING_RESOURCE = 17  # Signal "resource here" to nearby agents
+    PING_REPAIR = 18  # Signal "repair needed" to nearby agents
 
 
 class ProjectType(Enum):
@@ -67,6 +72,25 @@ class GridConfig:
     rainfall_rate: float = 0.02  # Base rainfall per step
     rainfall_variance: float = 0.01  # Variance in rainfall
 
+    # === REALISTIC HYDROLOGY ===
+    # Water sources (springs)
+    n_water_sources: int = 3  # Number of springs
+    source_flow_rate: float = 0.5  # Water emitted per step per source
+    source_radius: float = 2.0  # Spread radius of source
+
+    # Gradient-based flow
+    flow_gravity: float = 0.3  # How strongly water flows downhill
+    flow_momentum: float = 0.1  # Inertia - water keeps flowing in same direction
+
+    # Pooling/accumulation
+    pool_threshold: float = 0.5  # Min water to count as pooled
+    max_water_depth: float = 5.0  # Maximum water depth per cell
+
+    # Rain events
+    rain_event_probability: float = 0.05  # Chance of rain each step
+    rain_event_intensity: float = 0.3  # Water added during rain
+    rain_event_duration: int = 10  # Steps rain lasts
+
     # Vegetation parameters
     vegetation_regrowth_rate: float = 0.01  # Base regrowth rate
     max_vegetation: float = 1.0  # Maximum biomass per cell
@@ -79,6 +103,24 @@ class GridConfig:
     # Dam parameters
     dam_permeability_effect: float = 0.5  # f(d_i, d_j) = 0.5 * (d_i + d_j)
     dam_build_amount: float = 0.1  # Δd per build action
+
+    # === STRUCTURE PHYSICS ===
+    # Dam integrity (1.0 = perfect, 0.0 = broken)
+    dam_initial_integrity: float = 1.0
+    dam_decay_rate: float = 0.002  # Integrity lost per step
+    dam_overflow_threshold: float = 3.0  # Water depth that damages dam
+    dam_overflow_damage: float = 0.1  # Integrity lost when overflowed
+    dam_repair_amount: float = 0.2  # Integrity restored per repair action
+    dam_failure_threshold: float = 0.1  # Below this, dam breaks
+
+    # Flood events caused by dam failure
+    dam_break_flood_multiplier: float = 2.0  # Water surge when dam breaks
+
+    # === COMMUNICATION CHANNELS ===
+    message_decay_rate: float = 0.1  # Message strength decay per step
+    message_initial_strength: float = 1.0  # Strength when message sent
+    message_radius: int = 3  # Broadcast radius around sender
+    message_energy_cost: float = 0.5  # Energy cost to send message
 
     # Time step
     dt: float = 1.0  # Simulation time step
@@ -273,6 +315,35 @@ class OvermindConfig:
 
 
 @dataclass
+class MemoryConfig:
+    """Semantic memory configuration"""
+    # Capacity
+    max_events: int = 1000
+    max_events_per_type: int = 200
+
+    # Embedding dimensions
+    embedding_dim: int = 16
+
+    # Time decay
+    decay_halflife: int = 500  # Steps until relevance halves
+    min_relevance: float = 0.01  # Below this, event can be pruned
+
+    # Retrieval
+    default_k: int = 5  # Default number of neighbors for kNN
+    location_weight: float = 0.4  # Weight for spatial similarity
+    time_weight: float = 0.3  # Weight for temporal similarity
+    type_weight: float = 0.3  # Weight for type matching
+
+    # Consolidation
+    consolidation_interval: int = 100  # Steps between consolidation
+
+    # Memory integration
+    enable_memory: bool = True  # Toggle memory system
+    overmind_query_interval: int = 10  # How often Overmind queries memory
+    agent_query_radius: int = 5  # Radius for agent memory queries
+
+
+@dataclass
 class RewardConfig:
     """Reward structure configuration"""
     # === REBALANCED REWARDS (Fix survival >> building imbalance) ===
@@ -297,6 +368,11 @@ class RewardConfig:
     # Resource rewards
     forage_reward: float = 0.5
     build_action_reward: float = 10.0  # Was 1.0 - increased 10x
+
+    # Repair rewards (maintenance is as important as building)
+    repair_action_reward: float = 8.0  # Reward for repairing dams
+    repair_critical_bonus: float = 5.0  # Extra reward for repairing low-integrity dams
+    repair_critical_threshold: float = 0.3  # Integrity below this triggers critical bonus
 
     # === NEW REWARDS (Fix missing incentives) ===
 
@@ -326,22 +402,46 @@ class RewardConfig:
     individual_weight: float = 0.5  # α - Was 0.3, increased for personal credit
     global_weight: float = 0.5  # β - Was 0.7, reduced to fix free-rider
 
+    # === ROLE-CONDITIONED REWARDS ===
+    # Each role gets bonus for actions matching their specialization
+    # This encourages behavioral differentiation
+
+    # Scout: exploration/coverage specialist
+    scout_exploration_multiplier: float = 2.0  # 2x exploration reward
+    scout_coverage_bonus: float = 2.0  # Extra for unique cells visited
+
+    # Builder: structure construction specialist
+    builder_build_multiplier: float = 1.5  # 1.5x build reward
+    builder_placement_bonus: float = 3.0  # Extra for strategic placement
+
+    # Hauler: resource delivery specialist
+    hauler_carry_multiplier: float = 2.0  # 2x for picking up resources
+    hauler_delivery_bonus: float = 3.0  # Extra for delivering to build site
+
+    # Maintainer: dam repair specialist
+    maintainer_repair_multiplier: float = 2.0  # 2x repair reward
+    maintainer_prevention_bonus: float = 5.0  # Extra for preventing failures
+
+    # Guardian: lodge protection
+    guardian_stay_multiplier: float = 1.5  # Bonus for staying near lodge
+    guardian_protection_radius: float = 5.0  # Distance to lodge for bonus
+
 
 @dataclass
 class PolicyNetworkConfig:
     """Neural network policy configuration"""
     # Observation space
     local_view_radius: int = 5  # r - agent sees (2r+1) x (2r+1) grid
-    n_local_channels: int = 8  # elevation, water, vegetation, soil, dam, lodge, pheromone, physarum
+    n_local_channels: int = 10  # elevation, water, vegetation, soil, dam, lodge, pheromone, physarum, msg_resource, msg_repair
     n_global_features: int = 16  # Colony signals, project recruitment, etc.
-    n_internal_features: int = 8  # Energy, satiety, wetness, role, thresholds...
+    n_internal_features: int = 11  # Energy, satiety, wetness, 6 role flags, carrying_wood, has_project
 
     # Network architecture
     conv_channels: List[int] = field(default_factory=lambda: [32, 64, 64])
     fc_hidden_dims: List[int] = field(default_factory=lambda: [256, 128])
 
     # Action space
-    n_actions: int = 16  # Number of discrete actions
+    n_actions: int = 19  # Number of discrete actions (including communication pings)
 
     # Learning parameters
     learning_rate: float = 3e-4
@@ -518,6 +618,7 @@ class SimulationConfig:
     # Cognitive architecture
     semantic: SemanticConfig = field(default_factory=SemanticConfig)
     communication: CommunicationConfig = field(default_factory=CommunicationConfig)
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
 
     # PHASE 3: Time-scale separation
     time_scales: TimeScaleConfig = field(default_factory=TimeScaleConfig)

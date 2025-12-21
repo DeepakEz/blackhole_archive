@@ -18,7 +18,12 @@ from gymnasium import spaces
 
 from .config import (
     SimulationConfig, GridConfig, AgentConfig, ActionType, AgentRole,
-    ProjectType, ProjectStatus
+    ProjectType, ProjectStatus, MemoryConfig
+)
+from .semantic_memory import (
+    SemanticMemory, MemoryConfig as MemoryConfigClass, EventType,
+    create_flood_event, create_dam_break_event, create_resource_event,
+    create_danger_event, create_build_success_event
 )
 
 
@@ -42,20 +47,29 @@ class GridState:
 
     # Structures (modified by agents)
     dam_permeability: np.ndarray  # d_i - [0, 1], 0=blocked, 1=no dam
+    dam_integrity: np.ndarray  # Structure health [0, 1], 0=broken, 1=perfect
     lodge_map: np.ndarray  # Boolean indicating lodge locations
 
     # Agent presence (updated each step)
     agent_positions: np.ndarray  # Count of agents per cell
 
+    # Communication channels (decaying messages)
+    # Channel 0: "resource here" pings
+    # Channel 1: "need repair" pings
+    message_resource: np.ndarray = None  # Resource location messages [0, 1]
+    message_repair: np.ndarray = None  # Repair needed messages [0, 1]
+
 
 class HydrologyEngine:
     """
-    Computes water flow dynamics between cells.
+    Realistic water flow dynamics with sources, gradient flow, and pooling.
 
-    Water flows from high to low water surface height:
-        H_i = elevation_i + h_i
-        q_ij = g_ij * (H_i - H_j)
-        g_ij = g0 * f(d_i, d_j)
+    Features:
+    - Water sources (springs) at fixed locations that emit water
+    - Gradient-based flow (water flows downhill based on terrain slope)
+    - Pooling/accumulation in basins (low areas surrounded by higher terrain)
+    - Rain events (periodic bursts of water)
+    - Dam effects (reduce flow through, increase upstream retention)
     """
 
     def __init__(self, config: GridConfig):
@@ -65,6 +79,77 @@ class HydrologyEngine:
         # Precompute neighbor offsets (4-connected)
         self.neighbor_offsets = [(-1, 0), (1, 0), (0, -1), (0, 1)]
 
+        # Water source locations (will be set during reset)
+        self.source_locations: List[Tuple[int, int]] = []
+
+        # Flow momentum field (tracks water flow direction for inertia)
+        self.flow_momentum_y = np.zeros((self.size, self.size))
+        self.flow_momentum_x = np.zeros((self.size, self.size))
+
+        # Rain event state
+        self.rain_active = False
+        self.rain_steps_remaining = 0
+
+    def initialize_sources(self, elevation: np.ndarray) -> None:
+        """
+        Place water sources at elevated positions that can flow downhill.
+        Sources are placed in the upper portion of the terrain.
+        """
+        self.source_locations = []
+        n_sources = self.config.n_water_sources
+
+        # Find good source locations (elevated areas in the upper third)
+        upper_region = elevation[:self.size // 3, :]
+
+        for _ in range(n_sources):
+            # Find a high point in the upper region
+            # Add some randomness to avoid clustering
+            attempts = 0
+            while attempts < 50:
+                y = np.random.randint(0, self.size // 4)
+                x = np.random.randint(self.size // 4, 3 * self.size // 4)
+
+                # Check elevation is reasonable
+                if elevation[y, x] > np.percentile(elevation, 60):
+                    # Check not too close to existing sources
+                    too_close = False
+                    for sy, sx in self.source_locations:
+                        if abs(y - sy) + abs(x - sx) < 10:
+                            too_close = True
+                            break
+                    if not too_close:
+                        self.source_locations.append((y, x))
+                        break
+                attempts += 1
+
+            # Fallback: random high point
+            if attempts >= 50:
+                high_points = np.argwhere(elevation > np.percentile(elevation, 70))
+                if len(high_points) > 0:
+                    idx = np.random.randint(len(high_points))
+                    self.source_locations.append(tuple(high_points[idx]))
+
+    def compute_terrain_gradient(self, state: GridState) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Compute terrain gradient (slope) in y and x directions.
+        Returns (grad_y, grad_x) where positive values indicate uphill.
+        """
+        # Use central differences for smoother gradient
+        grad_y = np.zeros_like(state.elevation)
+        grad_x = np.zeros_like(state.elevation)
+
+        # Y gradient (positive = terrain rises going down/south)
+        grad_y[1:-1, :] = (state.elevation[2:, :] - state.elevation[:-2, :]) / 2.0
+        grad_y[0, :] = state.elevation[1, :] - state.elevation[0, :]
+        grad_y[-1, :] = state.elevation[-1, :] - state.elevation[-2, :]
+
+        # X gradient (positive = terrain rises going right/east)
+        grad_x[:, 1:-1] = (state.elevation[:, 2:] - state.elevation[:, :-2]) / 2.0
+        grad_x[:, 0] = state.elevation[:, 1] - state.elevation[:, 0]
+        grad_x[:, -1] = state.elevation[:, -1] - state.elevation[:, -2]
+
+        return grad_y, grad_x
+
     def compute_water_surface_height(self, state: GridState) -> np.ndarray:
         """Compute H_i = elevation_i + h_i"""
         return state.elevation + state.water_depth
@@ -73,6 +158,7 @@ class HydrologyEngine:
         """
         Compute conductance matrix g_ij for each cell and its neighbors.
         Returns shape (grid_size, grid_size, 4) for 4 neighbors.
+        Dam permeability reduces conductance.
         """
         g = np.zeros((self.size, self.size, 4))
         g0 = self.config.base_conductance
@@ -81,57 +167,249 @@ class HydrologyEngine:
             # Shifted permeability arrays
             d_j = np.roll(np.roll(state.dam_permeability, dy, axis=0), dx, axis=1)
 
-            # f(d_i, d_j) = 0.5 * (d_i + d_j)
+            # f(d_i, d_j) = 0.5 * (d_i + d_j) - dams reduce flow
             f = self.config.dam_permeability_effect * (state.dam_permeability + d_j)
 
             g[:, :, idx] = g0 * f
 
         return g
 
+    def apply_water_sources(self, state: GridState) -> np.ndarray:
+        """
+        Generate water from source locations (springs).
+        Water spreads in a small radius around each source.
+        """
+        source_water = np.zeros((self.size, self.size))
+
+        for sy, sx in self.source_locations:
+            # Add water in a circular area around the source
+            radius = int(self.config.source_radius)
+            for dy in range(-radius, radius + 1):
+                for dx in range(-radius, radius + 1):
+                    ny, nx = sy + dy, sx + dx
+                    if 0 <= ny < self.size and 0 <= nx < self.size:
+                        dist = np.sqrt(dy**2 + dx**2)
+                        if dist <= self.config.source_radius:
+                            # Water amount decreases with distance from center
+                            amount = self.config.source_flow_rate * (1 - dist / (self.config.source_radius + 1))
+                            source_water[ny, nx] += amount
+
+        return source_water
+
+    def detect_pools(self, state: GridState) -> np.ndarray:
+        """
+        Detect pooling areas - cells that are lower than all neighbors.
+        Returns a mask where True indicates a pool/basin cell.
+        """
+        elevation = state.elevation
+        is_pool = np.ones((self.size, self.size), dtype=bool)
+
+        for dy, dx in self.neighbor_offsets:
+            neighbor_elev = np.roll(np.roll(elevation, dy, axis=0), dx, axis=1)
+            # Cell is a pool if it's lower than or equal to all neighbors
+            is_pool &= (elevation <= neighbor_elev)
+
+        return is_pool
+
+    def update_rain_event(self) -> np.ndarray:
+        """
+        Handle rain events - periodic bursts of water over the map.
+        """
+        rain = np.zeros((self.size, self.size))
+
+        # Check if new rain should start
+        if not self.rain_active:
+            if np.random.random() < self.config.rain_event_probability:
+                self.rain_active = True
+                self.rain_steps_remaining = self.config.rain_event_duration
+
+        # If rain is active, add water
+        if self.rain_active:
+            # Rain with some spatial variation (not perfectly uniform)
+            rain = np.random.uniform(
+                0.5 * self.config.rain_event_intensity,
+                1.5 * self.config.rain_event_intensity,
+                (self.size, self.size)
+            )
+            self.rain_steps_remaining -= 1
+            if self.rain_steps_remaining <= 0:
+                self.rain_active = False
+
+        return rain
+
     def update_water(self, state: GridState, rainfall: np.ndarray,
                      boundary_inflow: np.ndarray, dt: float) -> np.ndarray:
         """
-        Update water depth for one time step.
+        Update water depth using realistic flow dynamics.
 
-        h_i(t+1) = h_i(t) + dt * (rainfall + boundary_inflow + inflows - outflows - losses)
-
-        FIX: Added diffusion smoothing to prevent checkerboard oscillation artifacts.
+        Flow rules:
+        1. Water from sources (springs)
+        2. Gradient-based flow (downhill bias)
+        3. Pressure-based flow (high water to low)
+        4. Dam effects (reduce flow, pool upstream)
+        5. Evaporation and seepage losses
         """
+        # Get terrain gradient
+        grad_y, grad_x = self.compute_terrain_gradient(state)
+
+        # Water surface height for pressure-based flow
         H = self.compute_water_surface_height(state)
+
+        # Conductance (affected by dams)
         g = self.compute_conductance(state)
 
-        # Compute net flux for each cell
+        # Initialize flux accumulator
         net_flux = np.zeros((self.size, self.size))
 
+        # Detect pools for special handling
+        pools = self.detect_pools(state)
+
+        # Compute flow for each neighbor direction
         for idx, (dy, dx) in enumerate(self.neighbor_offsets):
             # Neighbor's water surface height
             H_j = np.roll(np.roll(H, dy, axis=0), dx, axis=1)
 
-            # Flux from i to j: positive means outflow from i
-            # q_ij = g_ij * (H_i - H_j)
-            flux_to_neighbor = g[:, :, idx] * (H - H_j)
+            # Neighbor's elevation
+            elev_j = np.roll(np.roll(state.elevation, dy, axis=0), dx, axis=1)
 
-            # Net flux: subtract outflows, add inflows
-            # This is outflow from cell i
-            net_flux -= flux_to_neighbor
+            # 1. Pressure-based flux (water flows from high H to low H)
+            pressure_flux = g[:, :, idx] * (H - H_j)
+
+            # 2. Gravity-based flux (water flows downhill)
+            # Terrain slope in this direction
+            slope = elev_j - state.elevation  # Positive = neighbor is higher
+            gravity_flux = self.config.flow_gravity * state.water_depth * np.maximum(-slope, 0)
+
+            # 3. Momentum-based flux (water tends to keep flowing)
+            # Match direction with momentum field
+            if dy != 0:
+                momentum_flux = self.config.flow_momentum * self.flow_momentum_y * (dy > 0).astype(float)
+            else:
+                momentum_flux = self.config.flow_momentum * self.flow_momentum_x * (dx > 0).astype(float)
+
+            # Total flux to this neighbor
+            total_flux = pressure_flux + gravity_flux + momentum_flux
+
+            # Only allow outflow if we have water
+            total_flux = np.minimum(total_flux, state.water_depth * 0.25)  # Max 25% per direction
+            total_flux = np.maximum(total_flux, 0)  # No negative flux (handled by reverse direction)
+
+            # Pool cells retain more water
+            total_flux = np.where(pools, total_flux * 0.5, total_flux)
+
+            # Net flux: outflow from this cell
+            net_flux -= total_flux
+
+            # Update momentum field based on flow
+            if dy != 0:
+                self.flow_momentum_y += 0.1 * total_flux * dy
+            else:
+                self.flow_momentum_x += 0.1 * total_flux * dx
+
+        # Apply inflows from neighbors (reverse flux computation)
+        for idx, (dy, dx) in enumerate(self.neighbor_offsets):
+            # What neighbor cell (i-dy, i-dx) sends to us
+            neighbor_water = np.roll(np.roll(state.water_depth, -dy, axis=0), -dx, axis=1)
+            neighbor_H = np.roll(np.roll(H, -dy, axis=0), -dx, axis=1)
+            neighbor_g = np.roll(np.roll(g[:, :, idx], -dy, axis=0), -dx, axis=1)
+
+            # Flux from neighbor to us (their outflow is our inflow)
+            inflow = neighbor_g * np.maximum(neighbor_H - H, 0)
+            inflow = np.minimum(inflow, neighbor_water * 0.25)
+            net_flux += inflow
+
+        # Water sources
+        source_water = self.apply_water_sources(state)
+
+        # Rain events
+        rain_water = self.update_rain_event()
 
         # Loss terms: evaporation and seepage
         loss = (self.config.evaporation_rate + self.config.seepage_rate) * state.water_depth
 
         # Update water depth
-        new_water = state.water_depth + dt * (rainfall + boundary_inflow + net_flux - loss)
+        new_water = state.water_depth + dt * (
+            rainfall + boundary_inflow + source_water + rain_water + net_flux - loss
+        )
 
-        # FIX: Apply diffusion smoothing to prevent checkerboard oscillation
-        # This is a simple 3x3 box blur with center weight
+        # Decay momentum over time
+        self.flow_momentum_y *= 0.9
+        self.flow_momentum_x *= 0.9
+
+        # Apply smoothing to prevent numerical artifacts
         from scipy.ndimage import uniform_filter
-        diffusion_strength = 0.15  # Blend with neighbors
+        diffusion_strength = 0.1
         smoothed = uniform_filter(new_water, size=3, mode='reflect')
         new_water = (1 - diffusion_strength) * new_water + diffusion_strength * smoothed
 
-        # Ensure non-negative
-        new_water = np.maximum(new_water, 0.0)
+        # Clamp to valid range
+        new_water = np.clip(new_water, 0.0, self.config.max_water_depth)
 
         return new_water
+
+    def get_upstream_downstream_delta(self, state: GridState, dam_y: int, dam_x: int) -> float:
+        """
+        Compute the water level difference between upstream and downstream of a dam.
+        Useful for measuring dam effectiveness.
+        """
+        # Determine flow direction at this point (based on terrain gradient)
+        grad_y, grad_x = self.compute_terrain_gradient(state)
+
+        # Upstream is opposite to gradient direction
+        upstream_dy = 1 if grad_y[dam_y, dam_x] > 0 else -1
+        upstream_dx = 1 if grad_x[dam_y, dam_x] > 0 else -1
+
+        # Get upstream water (3x3 area)
+        upstream_water = 0.0
+        upstream_count = 0
+        for dy in range(-1, 2):
+            for dx in range(-1, 2):
+                ny, nx = dam_y + upstream_dy + dy, dam_x + upstream_dx + dx
+                if 0 <= ny < self.size and 0 <= nx < self.size:
+                    upstream_water += state.water_depth[ny, nx]
+                    upstream_count += 1
+
+        # Get downstream water (3x3 area)
+        downstream_water = 0.0
+        downstream_count = 0
+        for dy in range(-1, 2):
+            for dx in range(-1, 2):
+                ny, nx = dam_y - upstream_dy + dy, dam_x - upstream_dx + dx
+                if 0 <= ny < self.size and 0 <= nx < self.size:
+                    downstream_water += state.water_depth[ny, nx]
+                    downstream_count += 1
+
+        if upstream_count > 0 and downstream_count > 0:
+            return (upstream_water / upstream_count) - (downstream_water / downstream_count)
+        return 0.0
+
+    def compute_spatial_autocorrelation(self, state: GridState) -> float:
+        """
+        Compute spatial autocorrelation of water field.
+        Higher values indicate more coherent patterns (rivers/ponds).
+        """
+        water = state.water_depth
+        mean_water = np.mean(water)
+
+        if mean_water < 0.01:
+            return 0.0
+
+        # Compute neighbor similarity (Moran's I simplified)
+        total_similarity = 0.0
+        count = 0
+
+        for dy, dx in self.neighbor_offsets:
+            neighbor = np.roll(np.roll(water, dy, axis=0), dx, axis=1)
+            # Correlation between cell and neighbor
+            diff_self = water - mean_water
+            diff_neighbor = neighbor - mean_water
+            total_similarity += np.sum(diff_self * diff_neighbor)
+            count += water.size
+
+        variance = np.var(water)
+        if variance > 0:
+            return total_similarity / (count * variance)
+        return 0.0
 
 
 class VegetationEngine:
@@ -229,6 +507,321 @@ class VegetationEngine:
         return np.clip(new_moisture, 0.0, 1.0)
 
 
+class StructurePhysicsEngine:
+    """
+    Handles dam integrity, decay, overflow damage, and failure mechanics.
+
+    Features:
+    - Dams decay over time (need maintenance)
+    - Overflow causes damage (water pressure)
+    - Dams can break when integrity < threshold
+    - Broken dams cause flood events
+    """
+
+    def __init__(self, config: GridConfig):
+        self.config = config
+        self.size = config.grid_size
+
+        # Track dam lifetimes for metrics
+        self.dam_creation_step: Dict[Tuple[int, int], int] = {}
+        self.dam_failure_events: List[Tuple[int, int, int]] = []  # (y, x, step)
+        self.flood_events_prevented: int = 0
+        self.flood_events_caused: int = 0
+
+    def update_dam_integrity(self, state: GridState, current_step: int, dt: float) -> Tuple[np.ndarray, List[Tuple[int, int]]]:
+        """
+        Update dam integrity based on:
+        - Natural decay over time
+        - Water pressure (overflow) damage
+        - Failure when integrity drops below threshold
+
+        Returns:
+            (new_integrity, list of broken dam locations)
+        """
+        # Identify where dams exist (permeability < 1.0)
+        dam_mask = state.dam_permeability < 1.0
+
+        new_integrity = state.dam_integrity.copy()
+        broken_dams = []
+
+        # Only update where dams exist
+        if not np.any(dam_mask):
+            return new_integrity, broken_dams
+
+        # 1. Natural decay
+        decay = self.config.dam_decay_rate * dt
+        new_integrity = np.where(dam_mask, new_integrity - decay, new_integrity)
+
+        # 2. Overflow damage (water pressure)
+        overflow_mask = (state.water_depth > self.config.dam_overflow_threshold) & dam_mask
+        overflow_damage = self.config.dam_overflow_damage * dt
+        new_integrity = np.where(overflow_mask, new_integrity - overflow_damage, new_integrity)
+
+        # 3. Check for failures
+        failure_mask = (new_integrity < self.config.dam_failure_threshold) & dam_mask
+
+        if np.any(failure_mask):
+            # Record failure locations
+            failure_coords = np.argwhere(failure_mask)
+            for coord in failure_coords:
+                y, x = coord[0], coord[1]
+                broken_dams.append((y, x))
+                self.dam_failure_events.append((y, x, current_step))
+                self.flood_events_caused += 1
+
+                # Calculate dam lifetime
+                if (y, x) in self.dam_creation_step:
+                    lifetime = current_step - self.dam_creation_step[y, x]
+                    del self.dam_creation_step[(y, x)]
+
+        # Reset failed dams (permeability returns to 1.0)
+        # This is handled separately in step() to trigger flood
+
+        # Clamp integrity
+        new_integrity = np.clip(new_integrity, 0.0, 1.0)
+
+        # Reset integrity to 1.0 where there's no dam (permeability == 1.0)
+        new_integrity = np.where(~dam_mask, 1.0, new_integrity)
+
+        return new_integrity, broken_dams
+
+    def handle_dam_breaks(self, state: GridState, broken_dams: List[Tuple[int, int]]) -> np.ndarray:
+        """
+        Handle dam failures - reset permeability and cause flood surge.
+
+        Returns:
+            Updated water_depth after flood surge
+        """
+        new_water = state.water_depth.copy()
+
+        for y, x in broken_dams:
+            # Reset dam permeability (dam is gone)
+            state.dam_permeability[y, x] = 1.0
+            state.dam_integrity[y, x] = 1.0
+
+            # Flood surge - water rushes through
+            # Add extra water downstream (in the direction of flow)
+            surge = state.water_depth[y, x] * self.config.dam_break_flood_multiplier
+
+            # Spread surge to neighbors
+            for dy, dx in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                ny, nx = y + dy, x + dx
+                if 0 <= ny < self.size and 0 <= nx < self.size:
+                    new_water[ny, nx] += surge * 0.25
+
+        return new_water
+
+    def repair_dam(self, state: GridState, y: int, x: int) -> float:
+        """
+        Repair a dam at the given location.
+
+        Returns:
+            Amount of integrity restored
+        """
+        if state.dam_permeability[y, x] >= 1.0:
+            # No dam here
+            return 0.0
+
+        old_integrity = state.dam_integrity[y, x]
+        new_integrity = min(1.0, old_integrity + self.config.dam_repair_amount)
+        state.dam_integrity[y, x] = new_integrity
+
+        return new_integrity - old_integrity
+
+    def record_dam_creation(self, y: int, x: int, current_step: int):
+        """Record when a dam is created for lifetime tracking"""
+        if (y, x) not in self.dam_creation_step:
+            self.dam_creation_step[(y, x)] = current_step
+
+    def get_dam_lifetime_stats(self) -> Dict[str, float]:
+        """Get statistics about dam lifetimes"""
+        if not self.dam_failure_events:
+            return {"avg_lifetime": 0.0, "n_failures": 0}
+
+        lifetimes = []
+        for y, x, failure_step in self.dam_failure_events:
+            # Approximate - we don't track creation time perfectly
+            lifetimes.append(failure_step)  # Upper bound
+
+        return {
+            "avg_lifetime": np.mean(lifetimes) if lifetimes else 0.0,
+            "n_failures": len(self.dam_failure_events),
+            "flood_events_caused": self.flood_events_caused,
+        }
+
+
+class TaskAllocationSystem:
+    """
+    Swarm-based task allocation to prevent redundant targeting.
+
+    Features:
+    - Maintains task board with resource/repair/build locations
+    - Agents claim tasks to prevent duplication
+    - Tasks have priority and expiration
+    - Metrics: collision rate, efficiency
+    """
+
+    def __init__(self, config: GridConfig):
+        self.config = config
+        self.size = config.grid_size
+
+        # Task types
+        self.TASK_RESOURCE = 0
+        self.TASK_REPAIR = 1
+        self.TASK_BUILD = 2
+
+        # Task board: Dict[task_id, task_info]
+        # task_info = {type, location, priority, claimed_by, created_step, expires_step}
+        self.tasks: Dict[int, Dict] = {}
+        self.next_task_id = 0
+
+        # Metrics
+        self.collision_count = 0  # Multiple agents targeting same location
+        self.successful_claims = 0
+        self.total_tasks_created = 0
+
+    def create_task(self, task_type: int, location: Tuple[int, int],
+                    priority: float, current_step: int, duration: int = 50) -> int:
+        """Create a new task on the board."""
+        task_id = self.next_task_id
+        self.next_task_id += 1
+
+        self.tasks[task_id] = {
+            "type": task_type,
+            "location": location,
+            "priority": priority,
+            "claimed_by": None,
+            "created_step": current_step,
+            "expires_step": current_step + duration,
+        }
+        self.total_tasks_created += 1
+        return task_id
+
+    def claim_task(self, task_id: int, agent_id: int) -> bool:
+        """Agent claims a task. Returns True if successful."""
+        if task_id not in self.tasks:
+            return False
+
+        task = self.tasks[task_id]
+        if task["claimed_by"] is None:
+            task["claimed_by"] = agent_id
+            self.successful_claims += 1
+            return True
+        elif task["claimed_by"] == agent_id:
+            return True  # Already claimed by this agent
+        else:
+            self.collision_count += 1
+            return False
+
+    def release_task(self, task_id: int, agent_id: int):
+        """Release a claimed task (agent died, finished, or abandoned)."""
+        if task_id in self.tasks:
+            task = self.tasks[task_id]
+            if task["claimed_by"] == agent_id:
+                task["claimed_by"] = None
+
+    def complete_task(self, task_id: int):
+        """Mark task as completed and remove from board."""
+        if task_id in self.tasks:
+            del self.tasks[task_id]
+
+    def get_available_tasks(self, task_type: Optional[int] = None,
+                            near_location: Optional[Tuple[int, int]] = None,
+                            max_distance: float = float('inf')) -> List[Tuple[int, Dict]]:
+        """Get unclaimed tasks, optionally filtered by type and location."""
+        available = []
+        for task_id, task in self.tasks.items():
+            if task["claimed_by"] is not None:
+                continue
+            if task_type is not None and task["type"] != task_type:
+                continue
+            if near_location is not None:
+                dist = np.sqrt((task["location"][0] - near_location[0])**2 +
+                              (task["location"][1] - near_location[1])**2)
+                if dist > max_distance:
+                    continue
+            available.append((task_id, task))
+
+        # Sort by priority (highest first)
+        available.sort(key=lambda x: x[1]["priority"], reverse=True)
+        return available
+
+    def get_agent_task(self, agent_id: int) -> Optional[Tuple[int, Dict]]:
+        """Get the task claimed by an agent."""
+        for task_id, task in self.tasks.items():
+            if task["claimed_by"] == agent_id:
+                return (task_id, task)
+        return None
+
+    def update(self, current_step: int, alive_agents: List[int]):
+        """Update task board: expire old tasks, release dead agent claims."""
+        expired = []
+        for task_id, task in self.tasks.items():
+            # Expire old tasks
+            if current_step > task["expires_step"]:
+                expired.append(task_id)
+            # Release claims by dead agents
+            elif task["claimed_by"] is not None and task["claimed_by"] not in alive_agents:
+                task["claimed_by"] = None
+
+        for task_id in expired:
+            del self.tasks[task_id]
+
+    def scan_and_create_tasks(self, grid_state, current_step: int):
+        """
+        Scan environment and create tasks for:
+        - High vegetation areas (resource tasks)
+        - Low-integrity dams (repair tasks)
+        """
+        # Limit task creation to prevent explosion
+        max_tasks_per_type = 20
+
+        # Count existing tasks by type
+        type_counts = {0: 0, 1: 0, 2: 0}
+        for task in self.tasks.values():
+            type_counts[task["type"]] = type_counts.get(task["type"], 0) + 1
+
+        # Create resource tasks for high vegetation areas
+        if type_counts[self.TASK_RESOURCE] < max_tasks_per_type:
+            high_veg = np.argwhere(grid_state.vegetation > 0.7)
+            for coord in high_veg[:5]:  # Limit to 5 new tasks
+                y, x = coord[0], coord[1]
+                # Check if already a task here
+                existing = any(t["location"] == (y, x) and t["type"] == self.TASK_RESOURCE
+                              for t in self.tasks.values())
+                if not existing:
+                    priority = grid_state.vegetation[y, x]
+                    self.create_task(self.TASK_RESOURCE, (y, x), priority, current_step)
+
+        # Create repair tasks for low-integrity dams
+        if type_counts[self.TASK_REPAIR] < max_tasks_per_type:
+            dam_mask = grid_state.dam_permeability < 0.9
+            low_integrity_mask = grid_state.dam_integrity < 0.5
+            repair_needed = dam_mask & low_integrity_mask
+            repair_coords = np.argwhere(repair_needed)
+            for coord in repair_coords[:5]:
+                y, x = coord[0], coord[1]
+                existing = any(t["location"] == (y, x) and t["type"] == self.TASK_REPAIR
+                              for t in self.tasks.values())
+                if not existing:
+                    # Higher priority for lower integrity
+                    priority = 1.0 - grid_state.dam_integrity[y, x]
+                    self.create_task(self.TASK_REPAIR, (y, x), priority, current_step)
+
+    def get_metrics(self) -> Dict[str, float]:
+        """Get task allocation metrics."""
+        n_claimed = sum(1 for t in self.tasks.values() if t["claimed_by"] is not None)
+        n_available = len(self.tasks) - n_claimed
+
+        return {
+            "total_tasks": len(self.tasks),
+            "claimed_tasks": n_claimed,
+            "available_tasks": n_available,
+            "collision_rate": self.collision_count / max(1, self.successful_claims + self.collision_count),
+            "total_collisions": self.collision_count,
+        }
+
+
 @dataclass
 class AgentState:
     """Internal state of a single beaver agent"""
@@ -304,6 +897,8 @@ class MycoBeaverEnv(gym.Env):
         # Initialize engines
         self.hydrology_engine = HydrologyEngine(config.grid)
         self.vegetation_engine = VegetationEngine(config.grid)
+        self.structure_physics = StructurePhysicsEngine(config.grid)
+        self.task_allocation = TaskAllocationSystem(config.grid)
 
         # Placeholders for subsystems (initialized in reset)
         self.pheromone_field = None
@@ -311,6 +906,7 @@ class MycoBeaverEnv(gym.Env):
         self.physarum_network = None
         self.overmind = None
         self.semantic_system = None  # PHASE 3: Colony semantic system
+        self.semantic_memory = None  # Event-based memory with kNN retrieval
 
         # Grid state
         self.grid_state: Optional[GridState] = None
@@ -439,6 +1035,7 @@ class MycoBeaverEnv(gym.Env):
 
         # Initialize dams (no dams initially)
         dam_permeability = np.ones((size, size))
+        dam_integrity = np.ones((size, size))  # Perfect integrity where there's no dam
 
         # Initialize lodges
         lodge_map = np.zeros((size, size), dtype=bool)
@@ -453,15 +1050,25 @@ class MycoBeaverEnv(gym.Env):
         # Agent positions
         agent_positions = np.zeros((size, size), dtype=np.int32)
 
+        # Communication channels (decaying messages)
+        message_resource = np.zeros((size, size), dtype=np.float32)
+        message_repair = np.zeros((size, size), dtype=np.float32)
+
         self.grid_state = GridState(
             elevation=elevation,
             water_depth=water_depth,
             vegetation=vegetation,
             soil_moisture=soil_moisture,
             dam_permeability=dam_permeability,
+            dam_integrity=dam_integrity,
             lodge_map=lodge_map,
-            agent_positions=agent_positions
+            agent_positions=agent_positions,
+            message_resource=message_resource,
+            message_repair=message_repair
         )
+
+        # Initialize water sources based on terrain
+        self.hydrology_engine.initialize_sources(elevation)
 
     def _generate_terrain(self, size: int) -> np.ndarray:
         """Generate natural-looking terrain using multi-octave noise"""
@@ -612,11 +1219,19 @@ class MycoBeaverEnv(gym.Env):
             )
             thresholds = np.clip(thresholds, 0.1, 0.9)
 
-            # Assign role (initial distribution)
-            if i < self.config.n_beavers * 0.2:
+            # Assign role with balanced distribution
+            # Distribution: 15% scout, 25% worker, 15% guardian, 20% builder, 15% hauler, 10% maintainer
+            role_idx = i % 6
+            if role_idx == 0:
                 role = AgentRole.SCOUT
-            elif i < self.config.n_beavers * 0.6:
+            elif role_idx == 1:
                 role = AgentRole.WORKER
+            elif role_idx == 2:
+                role = AgentRole.BUILDER
+            elif role_idx == 3:
+                role = AgentRole.HAULER
+            elif role_idx == 4:
+                role = AgentRole.MAINTAINER
             else:
                 role = AgentRole.GUARDIAN
 
@@ -653,6 +1268,22 @@ class MycoBeaverEnv(gym.Env):
             self.config.n_beavers,
             self.config.info_costs,
         )
+
+        # Initialize event-based semantic memory
+        if self.config.memory.enable_memory:
+            grid_size = (self.config.grid.grid_size, self.config.grid.grid_size)
+            memory_config = MemoryConfigClass(
+                max_events=self.config.memory.max_events,
+                max_events_per_type=self.config.memory.max_events_per_type,
+                embedding_dim=self.config.memory.embedding_dim,
+                decay_halflife=self.config.memory.decay_halflife,
+                min_relevance=self.config.memory.min_relevance,
+                default_k=self.config.memory.default_k,
+                consolidation_interval=self.config.memory.consolidation_interval,
+            )
+            self.semantic_memory = SemanticMemory(memory_config, grid_size)
+        else:
+            self.semantic_memory = None
 
     def step(self, actions: Dict[str, int]) -> Tuple[Dict, Dict, bool, bool, Dict]:
         """
@@ -789,14 +1420,24 @@ class MycoBeaverEnv(gym.Env):
             # REWARD FIX: Exploration reward with diminishing returns
             new_pos = (new_y, new_x)
             visit_count = agent.get_visit_count(new_pos)
+            base_explore_reward = self.config.reward.exploration_reward
             if visit_count == 0:
                 # First visit - full exploration reward
-                reward += self.config.reward.exploration_reward
+                explore_reward = base_explore_reward
             else:
                 # Revisit - diminished reward
-                reward += self.config.reward.exploration_reward * (
+                explore_reward = base_explore_reward * (
                     self.config.reward.exploration_decay ** visit_count
                 )
+
+            # ROLE BONUS: Scout gets exploration multiplier
+            if agent.role == AgentRole.SCOUT:
+                explore_reward *= self.config.reward.scout_exploration_multiplier
+                # Extra coverage bonus for scouts visiting new cells
+                if visit_count == 0:
+                    explore_reward += self.config.reward.scout_coverage_bonus
+
+            reward += explore_reward
             agent.record_visit(new_pos)
 
             # REWARD FIX: Carrying wood proximity bonus
@@ -819,7 +1460,15 @@ class MycoBeaverEnv(gym.Env):
 
         elif action == ActionType.STAY:
             # Minimal energy cost
-            pass
+            # ROLE BONUS: Guardian gets bonus for staying near lodge
+            if agent.role == AgentRole.GUARDIAN:
+                # Find nearest lodge
+                lodge_coords = np.argwhere(self.grid_state.lodge_map)
+                if len(lodge_coords) > 0:
+                    distances = np.sqrt((lodge_coords[:, 0] - y)**2 + (lodge_coords[:, 1] - x)**2)
+                    min_dist = distances.min()
+                    if min_dist < self.config.reward.guardian_protection_radius:
+                        reward += self.config.reward.guardian_stay_multiplier
 
         elif action == ActionType.REST:
             # Recover energy, especially in lodge
@@ -840,6 +1489,16 @@ class MycoBeaverEnv(gym.Env):
                 agent.carrying_wood = min(config.max_carry_wood, agent.carrying_wood + 1)
                 reward += self.config.reward.forage_reward
 
+                # === SEMANTIC MEMORY: Record resource discovery ===
+                if self.semantic_memory is not None and veg_available > 0.5:
+                    # Only record high-value resource finds
+                    create_resource_event(
+                        self.semantic_memory,
+                        location=(y, x),
+                        amount=veg_available,
+                        resource_type="vegetation"
+                    )
+
                 # SHAPING: Extra reward for acquiring wood when near water (intent to build)
                 if self.grid_state.water_depth[y, x] > 0.1:
                     reward += self.config.reward.forage_reward * 0.5  # Water proximity bonus
@@ -850,9 +1509,16 @@ class MycoBeaverEnv(gym.Env):
             # REWARD FIX: Relaxed project requirement - agents can build freely
             if agent.carrying_wood > 0:
                 old_permeability = self.grid_state.dam_permeability[y, x]
+                is_new_dam = old_permeability >= 1.0  # No dam existed before
                 new_permeability = max(0.0, old_permeability - self.config.grid.dam_build_amount)
                 self.grid_state.dam_permeability[y, x] = new_permeability
                 agent.carrying_wood -= 1
+
+                # Track dam creation for lifetime statistics
+                if is_new_dam:
+                    self.structure_physics.record_dam_creation(y, x, self.current_step)
+                    # Initialize dam integrity
+                    self.grid_state.dam_integrity[y, x] = self.config.grid.dam_initial_integrity
 
                 # REWARD FIX: Track personal contribution (fixes free-rider)
                 agent.structures_built_by_me += 1
@@ -862,7 +1528,13 @@ class MycoBeaverEnv(gym.Env):
                     self.project_manager.add_progress(agent.current_project, 1)
 
                 # Base build reward
-                reward += self.config.reward.build_action_reward
+                build_reward = self.config.reward.build_action_reward
+
+                # ROLE BONUS: Builder gets multiplier
+                if agent.role == AgentRole.BUILDER:
+                    build_reward *= self.config.reward.builder_build_multiplier
+
+                reward += build_reward
 
                 # REWARD FIX: Personal structure bonus
                 reward += self.config.reward.personal_structure_bonus
@@ -870,14 +1542,28 @@ class MycoBeaverEnv(gym.Env):
                 # SHAPING: Water proximity bonus (dams near water are more useful)
                 water_nearby = self.grid_state.water_depth[max(0,y-2):min(self.config.grid.grid_size,y+3),
                                                            max(0,x-2):min(self.config.grid.grid_size,x+3)]
-                if np.any(water_nearby > 0.1):
+                strategic_placement = np.any(water_nearby > 0.1)
+                if strategic_placement:
                     reward += self.config.reward.build_action_reward * 0.5  # Near-water bonus
+                    # ROLE BONUS: Builder gets extra for strategic placement
+                    if agent.role == AgentRole.BUILDER:
+                        reward += self.config.reward.builder_placement_bonus
 
                 # SHAPING: Early infrastructure bonus (encourage faster emergence)
                 total_structures = np.sum(self.grid_state.dam_permeability < 0.9)
                 if total_structures < 10:  # Extra bonus for first 10 structures
                     early_bonus = self.config.reward.build_action_reward * (1.0 - total_structures / 10)
                     reward += early_bonus
+
+                # === SEMANTIC MEMORY: Record successful build ===
+                if self.semantic_memory is not None and is_new_dam:
+                    effectiveness = 1.0 if strategic_placement else 0.5
+                    create_build_success_event(
+                        self.semantic_memory,
+                        location=(y, x),
+                        structure_type="dam",
+                        effectiveness=effectiveness
+                    )
             agent.energy -= config.build_energy_cost
 
         elif action == ActionType.BUILD_LODGE:
@@ -899,11 +1585,20 @@ class MycoBeaverEnv(gym.Env):
                     harvested[y, x] += 0.1
                     agent.carrying_wood += 1
                     # REWARD FIX: Reward for picking up wood
-                    reward += self.config.reward.carry_wood_reward
+                    carry_reward = self.config.reward.carry_wood_reward
+
+                    # ROLE BONUS: Hauler gets multiplier for picking up resources
+                    if agent.role == AgentRole.HAULER:
+                        carry_reward *= self.config.reward.hauler_carry_multiplier
+
+                    reward += carry_reward
 
                     # SHAPING: Extra reward for picking up wood when structures exist (intent to contribute)
                     if np.any(self.grid_state.dam_permeability < 0.9):
                         reward += self.config.reward.carry_wood_reward * 0.5  # Structure existence bonus
+                        # ROLE BONUS: Hauler gets delivery bonus when structures exist
+                        if agent.role == AgentRole.HAULER:
+                            reward += self.config.reward.hauler_delivery_bonus
 
         elif action == ActionType.DROP_RESOURCE:
             # Drop carried resource
@@ -919,6 +1614,72 @@ class MycoBeaverEnv(gym.Env):
             if self.config.training.use_projects and agent.role == AgentRole.SCOUT:
                 if agent.current_project is not None:
                     self.project_manager.advertise(agent.current_project, agent.id)
+
+        elif action == ActionType.REPAIR_DAM:
+            # Repair an existing dam at current location
+            if self.grid_state.dam_permeability[y, x] < 1.0:  # Dam exists here
+                if agent.carrying_wood > 0:
+                    agent.carrying_wood -= 1
+                    old_integrity = self.grid_state.dam_integrity[y, x]
+
+                    # Repair the dam
+                    integrity_restored = self.structure_physics.repair_dam(self.grid_state, y, x)
+
+                    if integrity_restored > 0:
+                        # Base repair reward
+                        repair_reward = self.config.reward.repair_action_reward
+
+                        # ROLE BONUS: Maintainer gets multiplier
+                        if agent.role == AgentRole.MAINTAINER:
+                            repair_reward *= self.config.reward.maintainer_repair_multiplier
+
+                        reward += repair_reward
+
+                        # Critical repair bonus (more reward for saving dying dams)
+                        if old_integrity < self.config.reward.repair_critical_threshold:
+                            reward += self.config.reward.repair_critical_bonus
+                            # ROLE BONUS: Maintainer gets prevention bonus for critical repairs
+                            if agent.role == AgentRole.MAINTAINER:
+                                reward += self.config.reward.maintainer_prevention_bonus
+
+                        # Track repair for agent
+                        agent.structures_built_by_me += 1  # Repairs count as contribution
+            agent.energy -= config.build_energy_cost  # Same energy cost as building
+
+        elif action == ActionType.PING_RESOURCE:
+            # Send "resource here" message to nearby agents
+            # Useful when Scout finds vegetation
+            if self.grid_state.message_resource is not None:
+                radius = self.config.grid.message_radius
+                for dy in range(-radius, radius + 1):
+                    for dx in range(-radius, radius + 1):
+                        ny, nx = y + dy, x + dx
+                        if 0 <= ny < self.config.grid.grid_size and 0 <= nx < self.config.grid.grid_size:
+                            # Strength decreases with distance from sender
+                            dist = np.sqrt(dy**2 + dx**2)
+                            if dist <= radius:
+                                strength = self.config.grid.message_initial_strength * (1 - dist / (radius + 1))
+                                self.grid_state.message_resource[ny, nx] = max(
+                                    self.grid_state.message_resource[ny, nx], strength
+                                )
+            agent.energy -= self.config.grid.message_energy_cost
+
+        elif action == ActionType.PING_REPAIR:
+            # Send "repair needed" message to nearby agents
+            # Useful when any agent notices low-integrity dam
+            if self.grid_state.message_repair is not None:
+                radius = self.config.grid.message_radius
+                for dy in range(-radius, radius + 1):
+                    for dx in range(-radius, radius + 1):
+                        ny, nx = y + dy, x + dx
+                        if 0 <= ny < self.config.grid.grid_size and 0 <= nx < self.config.grid.grid_size:
+                            dist = np.sqrt(dy**2 + dx**2)
+                            if dist <= radius:
+                                strength = self.config.grid.message_initial_strength * (1 - dist / (radius + 1))
+                                self.grid_state.message_repair[ny, nx] = max(
+                                    self.grid_state.message_repair[ny, nx], strength
+                                )
+            agent.energy -= self.config.grid.message_energy_cost
 
         return reward
 
@@ -967,6 +1728,20 @@ class MycoBeaverEnv(gym.Env):
             agent.alive = False
             self.grid_state.agent_positions[y, x] -= 1
 
+            # === SEMANTIC MEMORY: Record danger zone ===
+            if self.semantic_memory is not None:
+                from .semantic_memory import EventType
+                self.semantic_memory.store_event(
+                    EventType.AGENT_DEATH,
+                    location=(y, x),
+                    severity=1.0,
+                    metadata={
+                        "agent_id": agent.id,
+                        "cause": "energy_depletion",
+                        "water_depth": float(self.grid_state.water_depth[y, x]),
+                    }
+                )
+
     def _update_environment_dynamics(self, dt: float):
         """Update water and soil"""
         # Generate rainfall
@@ -988,9 +1763,71 @@ class MycoBeaverEnv(gym.Env):
         # Clamp water depth to prevent numerical overflow (max 10 meters)
         self.grid_state.water_depth = np.clip(new_water, 0.0, 10.0)
 
+        # === STRUCTURE PHYSICS: Dam integrity, decay, and failure ===
+        new_integrity, broken_dams = self.structure_physics.update_dam_integrity(
+            self.grid_state, self.current_step, dt
+        )
+        self.grid_state.dam_integrity = new_integrity
+
+        # Handle dam failures (flood surge)
+        if broken_dams:
+            flood_water = self.structure_physics.handle_dam_breaks(self.grid_state, broken_dams)
+            self.grid_state.water_depth = np.clip(flood_water, 0.0, 10.0)
+
+            # === SEMANTIC MEMORY: Record dam break events ===
+            if self.semantic_memory is not None:
+                for y, x in broken_dams:
+                    integrity = self.grid_state.dam_integrity[y, x]
+                    create_dam_break_event(
+                        self.semantic_memory,
+                        location=(y, x),
+                        dam_id=y * self.config.grid.grid_size + x,
+                        integrity_at_break=integrity
+                    )
+
         # Update soil moisture
         new_moisture = self.vegetation_engine.update_soil_moisture(self.grid_state, dt)
         self.grid_state.soil_moisture = new_moisture
+
+        # === COMMUNICATION: Message decay ===
+        # Messages decay over time, requiring re-transmission for persistence
+        decay = self.config.grid.message_decay_rate * dt
+        if self.grid_state.message_resource is not None:
+            self.grid_state.message_resource = np.maximum(
+                0, self.grid_state.message_resource - decay
+            )
+        if self.grid_state.message_repair is not None:
+            self.grid_state.message_repair = np.maximum(
+                0, self.grid_state.message_repair - decay
+            )
+
+        # === TASK ALLOCATION: Update task board ===
+        alive_agent_ids = [a.id for a in self.agents if a.alive]
+        self.task_allocation.update(self.current_step, alive_agent_ids)
+        # Scan environment and create new tasks every 10 steps
+        if self.current_step % 10 == 0:
+            self.task_allocation.scan_and_create_tasks(self.grid_state, self.current_step)
+
+        # === SEMANTIC MEMORY: Step update and flood detection ===
+        if self.semantic_memory is not None:
+            self.semantic_memory.step(self.current_step)
+
+            # Detect and record flood events (every 5 steps to avoid spam)
+            if self.current_step % 5 == 0:
+                flood_threshold = 2.0
+                flood_mask = self.grid_state.water_depth > flood_threshold
+                if np.any(flood_mask):
+                    # Find most severe flood locations
+                    flood_locs = np.argwhere(flood_mask)
+                    for loc in flood_locs[:5]:  # Limit to 5 most significant
+                        y, x = loc
+                        water_level = self.grid_state.water_depth[y, x]
+                        create_flood_event(
+                            self.semantic_memory,
+                            location=(y, x),
+                            water_level=water_level,
+                            affected_area=1
+                        )
 
     def _update_subsystems(self, dt: float):
         """
@@ -1250,6 +2087,12 @@ class MycoBeaverEnv(gym.Env):
                     if self.physarum_network is not None:
                         local_grid[7, oy, ox] = self.physarum_network.get_average_conductivity(ny, nx)
 
+                    # Communication channels
+                    if self.grid_state.message_resource is not None:
+                        local_grid[8, oy, ox] = self.grid_state.message_resource[ny, nx]
+                    if self.grid_state.message_repair is not None:
+                        local_grid[9, oy, ox] = self.grid_state.message_repair[ny, nx]
+
         # Normalize local grid
         local_grid = np.clip(local_grid, 0, 1)
 
@@ -1271,14 +2114,17 @@ class MycoBeaverEnv(gym.Env):
         global_features[-2] = n_alive / self.config.n_beavers
         global_features[-1] = np.mean([a.energy for a in self.agents if a.alive]) / self.config.agent.initial_energy
 
-        # Internal state
+        # Internal state with all 6 role flags
         internal_state = np.array([
             agent.energy / self.config.agent.initial_energy,
             agent.satiety,
             agent.wetness,
-            float(agent.role.value == 'scout'),
-            float(agent.role.value == 'worker'),
-            float(agent.role.value == 'guardian'),
+            float(agent.role == AgentRole.SCOUT),
+            float(agent.role == AgentRole.WORKER),
+            float(agent.role == AgentRole.GUARDIAN),
+            float(agent.role == AgentRole.BUILDER),
+            float(agent.role == AgentRole.HAULER),
+            float(agent.role == AgentRole.MAINTAINER),
             agent.carrying_wood / self.config.agent.max_carry_wood,
             float(agent.current_project is not None),
         ], dtype=np.float32)
@@ -1365,6 +2211,41 @@ class MycoBeaverEnv(gym.Env):
         n_alive = sum(1 for a in self.agents if a.alive)
         n_structures = np.sum(self.grid_state.dam_permeability < 0.9)
 
+        # Hydrology metrics
+        water_autocorr = self.hydrology_engine.compute_spatial_autocorrelation(self.grid_state)
+        pools = self.hydrology_engine.detect_pools(self.grid_state)
+        n_pools = np.sum(pools & (self.grid_state.water_depth > self.config.grid.pool_threshold))
+
+        # Dam effectiveness (upstream-downstream delta for each dam)
+        dam_mask = self.grid_state.dam_permeability < 0.9
+        dam_effectiveness = 0.0
+        if np.any(dam_mask):
+            dam_coords = np.argwhere(dam_mask)
+            for y, x in dam_coords[:5]:  # Sample up to 5 dams
+                delta = self.hydrology_engine.get_upstream_downstream_delta(self.grid_state, y, x)
+                dam_effectiveness += max(0, delta)  # Positive delta = water pooling upstream
+            dam_effectiveness /= len(dam_coords[:5])
+
+        # Vegetation metrics
+        veg = self.grid_state.vegetation
+        veg_normalized = veg / (np.max(veg) + 1e-8)
+        # Vegetation entropy (higher = more variation, not flat)
+        veg_nonzero = veg_normalized[veg_normalized > 0.01]
+        if len(veg_nonzero) > 0:
+            veg_probs = veg_nonzero / np.sum(veg_nonzero)
+            veg_entropy = -np.sum(veg_probs * np.log(veg_probs + 1e-8))
+        else:
+            veg_entropy = 0.0
+
+        # Structure physics metrics
+        dam_lifetime_stats = self.structure_physics.get_dam_lifetime_stats()
+        avg_dam_integrity = 0.0
+        low_integrity_count = 0
+        if np.any(dam_mask):
+            dam_integrities = self.grid_state.dam_integrity[dam_mask]
+            avg_dam_integrity = float(np.mean(dam_integrities))
+            low_integrity_count = int(np.sum(dam_integrities < self.config.grid.dam_failure_threshold * 2))
+
         info = {
             "step": self.current_step,
             "n_alive_agents": n_alive,
@@ -1372,7 +2253,37 @@ class MycoBeaverEnv(gym.Env):
             "total_vegetation": np.sum(self.grid_state.vegetation),
             "avg_water_level": np.mean(self.grid_state.water_depth),
             "episode_reward": self.episode_reward,
+            # Hydrology metrics
+            "water_spatial_autocorr": water_autocorr,
+            "n_water_pools": n_pools,
+            "dam_effectiveness": dam_effectiveness,
+            "rain_active": self.hydrology_engine.rain_active,
+            # Vegetation metrics
+            "vegetation_entropy": veg_entropy,
+            "vegetation_variance": float(np.var(veg)),
+            # Structure physics metrics
+            "avg_dam_integrity": avg_dam_integrity,
+            "low_integrity_dams": low_integrity_count,
+            "dam_failures": dam_lifetime_stats.get("n_failures", 0),
+            "flood_events_caused": dam_lifetime_stats.get("flood_events_caused", 0),
         }
+
+        # Task allocation metrics
+        task_metrics = self.task_allocation.get_metrics()
+        info.update({
+            "task_collision_rate": task_metrics["collision_rate"],
+            "tasks_available": task_metrics["available_tasks"],
+            "tasks_claimed": task_metrics["claimed_tasks"],
+        })
+
+        # Semantic memory metrics
+        if self.semantic_memory is not None:
+            memory_stats = self.semantic_memory.get_statistics()
+            info.update({
+                "memory_total_events": memory_stats["total_events"],
+                "memory_retrievals": memory_stats["total_retrievals"],
+                "memory_retrieval_accuracy": memory_stats["retrieval_accuracy"],
+            })
 
         # === PHASE 3: Time-scale separation tracking ===
         # Only include if tracking is enabled (useful for debugging/logging)
