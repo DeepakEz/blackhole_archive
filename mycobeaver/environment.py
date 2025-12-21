@@ -42,6 +42,7 @@ class GridState:
 
     # Structures (modified by agents)
     dam_permeability: np.ndarray  # d_i - [0, 1], 0=blocked, 1=no dam
+    dam_integrity: np.ndarray  # Structure health [0, 1], 0=broken, 1=perfect
     lodge_map: np.ndarray  # Boolean indicating lodge locations
 
     # Agent presence (updated each step)
@@ -50,12 +51,14 @@ class GridState:
 
 class HydrologyEngine:
     """
-    Computes water flow dynamics between cells.
+    Realistic water flow dynamics with sources, gradient flow, and pooling.
 
-    Water flows from high to low water surface height:
-        H_i = elevation_i + h_i
-        q_ij = g_ij * (H_i - H_j)
-        g_ij = g0 * f(d_i, d_j)
+    Features:
+    - Water sources (springs) at fixed locations that emit water
+    - Gradient-based flow (water flows downhill based on terrain slope)
+    - Pooling/accumulation in basins (low areas surrounded by higher terrain)
+    - Rain events (periodic bursts of water)
+    - Dam effects (reduce flow through, increase upstream retention)
     """
 
     def __init__(self, config: GridConfig):
@@ -65,6 +68,77 @@ class HydrologyEngine:
         # Precompute neighbor offsets (4-connected)
         self.neighbor_offsets = [(-1, 0), (1, 0), (0, -1), (0, 1)]
 
+        # Water source locations (will be set during reset)
+        self.source_locations: List[Tuple[int, int]] = []
+
+        # Flow momentum field (tracks water flow direction for inertia)
+        self.flow_momentum_y = np.zeros((self.size, self.size))
+        self.flow_momentum_x = np.zeros((self.size, self.size))
+
+        # Rain event state
+        self.rain_active = False
+        self.rain_steps_remaining = 0
+
+    def initialize_sources(self, elevation: np.ndarray) -> None:
+        """
+        Place water sources at elevated positions that can flow downhill.
+        Sources are placed in the upper portion of the terrain.
+        """
+        self.source_locations = []
+        n_sources = self.config.n_water_sources
+
+        # Find good source locations (elevated areas in the upper third)
+        upper_region = elevation[:self.size // 3, :]
+
+        for _ in range(n_sources):
+            # Find a high point in the upper region
+            # Add some randomness to avoid clustering
+            attempts = 0
+            while attempts < 50:
+                y = np.random.randint(0, self.size // 4)
+                x = np.random.randint(self.size // 4, 3 * self.size // 4)
+
+                # Check elevation is reasonable
+                if elevation[y, x] > np.percentile(elevation, 60):
+                    # Check not too close to existing sources
+                    too_close = False
+                    for sy, sx in self.source_locations:
+                        if abs(y - sy) + abs(x - sx) < 10:
+                            too_close = True
+                            break
+                    if not too_close:
+                        self.source_locations.append((y, x))
+                        break
+                attempts += 1
+
+            # Fallback: random high point
+            if attempts >= 50:
+                high_points = np.argwhere(elevation > np.percentile(elevation, 70))
+                if len(high_points) > 0:
+                    idx = np.random.randint(len(high_points))
+                    self.source_locations.append(tuple(high_points[idx]))
+
+    def compute_terrain_gradient(self, state: GridState) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Compute terrain gradient (slope) in y and x directions.
+        Returns (grad_y, grad_x) where positive values indicate uphill.
+        """
+        # Use central differences for smoother gradient
+        grad_y = np.zeros_like(state.elevation)
+        grad_x = np.zeros_like(state.elevation)
+
+        # Y gradient (positive = terrain rises going down/south)
+        grad_y[1:-1, :] = (state.elevation[2:, :] - state.elevation[:-2, :]) / 2.0
+        grad_y[0, :] = state.elevation[1, :] - state.elevation[0, :]
+        grad_y[-1, :] = state.elevation[-1, :] - state.elevation[-2, :]
+
+        # X gradient (positive = terrain rises going right/east)
+        grad_x[:, 1:-1] = (state.elevation[:, 2:] - state.elevation[:, :-2]) / 2.0
+        grad_x[:, 0] = state.elevation[:, 1] - state.elevation[:, 0]
+        grad_x[:, -1] = state.elevation[:, -1] - state.elevation[:, -2]
+
+        return grad_y, grad_x
+
     def compute_water_surface_height(self, state: GridState) -> np.ndarray:
         """Compute H_i = elevation_i + h_i"""
         return state.elevation + state.water_depth
@@ -73,6 +147,7 @@ class HydrologyEngine:
         """
         Compute conductance matrix g_ij for each cell and its neighbors.
         Returns shape (grid_size, grid_size, 4) for 4 neighbors.
+        Dam permeability reduces conductance.
         """
         g = np.zeros((self.size, self.size, 4))
         g0 = self.config.base_conductance
@@ -81,57 +156,249 @@ class HydrologyEngine:
             # Shifted permeability arrays
             d_j = np.roll(np.roll(state.dam_permeability, dy, axis=0), dx, axis=1)
 
-            # f(d_i, d_j) = 0.5 * (d_i + d_j)
+            # f(d_i, d_j) = 0.5 * (d_i + d_j) - dams reduce flow
             f = self.config.dam_permeability_effect * (state.dam_permeability + d_j)
 
             g[:, :, idx] = g0 * f
 
         return g
 
+    def apply_water_sources(self, state: GridState) -> np.ndarray:
+        """
+        Generate water from source locations (springs).
+        Water spreads in a small radius around each source.
+        """
+        source_water = np.zeros((self.size, self.size))
+
+        for sy, sx in self.source_locations:
+            # Add water in a circular area around the source
+            radius = int(self.config.source_radius)
+            for dy in range(-radius, radius + 1):
+                for dx in range(-radius, radius + 1):
+                    ny, nx = sy + dy, sx + dx
+                    if 0 <= ny < self.size and 0 <= nx < self.size:
+                        dist = np.sqrt(dy**2 + dx**2)
+                        if dist <= self.config.source_radius:
+                            # Water amount decreases with distance from center
+                            amount = self.config.source_flow_rate * (1 - dist / (self.config.source_radius + 1))
+                            source_water[ny, nx] += amount
+
+        return source_water
+
+    def detect_pools(self, state: GridState) -> np.ndarray:
+        """
+        Detect pooling areas - cells that are lower than all neighbors.
+        Returns a mask where True indicates a pool/basin cell.
+        """
+        elevation = state.elevation
+        is_pool = np.ones((self.size, self.size), dtype=bool)
+
+        for dy, dx in self.neighbor_offsets:
+            neighbor_elev = np.roll(np.roll(elevation, dy, axis=0), dx, axis=1)
+            # Cell is a pool if it's lower than or equal to all neighbors
+            is_pool &= (elevation <= neighbor_elev)
+
+        return is_pool
+
+    def update_rain_event(self) -> np.ndarray:
+        """
+        Handle rain events - periodic bursts of water over the map.
+        """
+        rain = np.zeros((self.size, self.size))
+
+        # Check if new rain should start
+        if not self.rain_active:
+            if np.random.random() < self.config.rain_event_probability:
+                self.rain_active = True
+                self.rain_steps_remaining = self.config.rain_event_duration
+
+        # If rain is active, add water
+        if self.rain_active:
+            # Rain with some spatial variation (not perfectly uniform)
+            rain = np.random.uniform(
+                0.5 * self.config.rain_event_intensity,
+                1.5 * self.config.rain_event_intensity,
+                (self.size, self.size)
+            )
+            self.rain_steps_remaining -= 1
+            if self.rain_steps_remaining <= 0:
+                self.rain_active = False
+
+        return rain
+
     def update_water(self, state: GridState, rainfall: np.ndarray,
                      boundary_inflow: np.ndarray, dt: float) -> np.ndarray:
         """
-        Update water depth for one time step.
+        Update water depth using realistic flow dynamics.
 
-        h_i(t+1) = h_i(t) + dt * (rainfall + boundary_inflow + inflows - outflows - losses)
-
-        FIX: Added diffusion smoothing to prevent checkerboard oscillation artifacts.
+        Flow rules:
+        1. Water from sources (springs)
+        2. Gradient-based flow (downhill bias)
+        3. Pressure-based flow (high water to low)
+        4. Dam effects (reduce flow, pool upstream)
+        5. Evaporation and seepage losses
         """
+        # Get terrain gradient
+        grad_y, grad_x = self.compute_terrain_gradient(state)
+
+        # Water surface height for pressure-based flow
         H = self.compute_water_surface_height(state)
+
+        # Conductance (affected by dams)
         g = self.compute_conductance(state)
 
-        # Compute net flux for each cell
+        # Initialize flux accumulator
         net_flux = np.zeros((self.size, self.size))
 
+        # Detect pools for special handling
+        pools = self.detect_pools(state)
+
+        # Compute flow for each neighbor direction
         for idx, (dy, dx) in enumerate(self.neighbor_offsets):
             # Neighbor's water surface height
             H_j = np.roll(np.roll(H, dy, axis=0), dx, axis=1)
 
-            # Flux from i to j: positive means outflow from i
-            # q_ij = g_ij * (H_i - H_j)
-            flux_to_neighbor = g[:, :, idx] * (H - H_j)
+            # Neighbor's elevation
+            elev_j = np.roll(np.roll(state.elevation, dy, axis=0), dx, axis=1)
 
-            # Net flux: subtract outflows, add inflows
-            # This is outflow from cell i
-            net_flux -= flux_to_neighbor
+            # 1. Pressure-based flux (water flows from high H to low H)
+            pressure_flux = g[:, :, idx] * (H - H_j)
+
+            # 2. Gravity-based flux (water flows downhill)
+            # Terrain slope in this direction
+            slope = elev_j - state.elevation  # Positive = neighbor is higher
+            gravity_flux = self.config.flow_gravity * state.water_depth * np.maximum(-slope, 0)
+
+            # 3. Momentum-based flux (water tends to keep flowing)
+            # Match direction with momentum field
+            if dy != 0:
+                momentum_flux = self.config.flow_momentum * self.flow_momentum_y * (dy > 0).astype(float)
+            else:
+                momentum_flux = self.config.flow_momentum * self.flow_momentum_x * (dx > 0).astype(float)
+
+            # Total flux to this neighbor
+            total_flux = pressure_flux + gravity_flux + momentum_flux
+
+            # Only allow outflow if we have water
+            total_flux = np.minimum(total_flux, state.water_depth * 0.25)  # Max 25% per direction
+            total_flux = np.maximum(total_flux, 0)  # No negative flux (handled by reverse direction)
+
+            # Pool cells retain more water
+            total_flux = np.where(pools, total_flux * 0.5, total_flux)
+
+            # Net flux: outflow from this cell
+            net_flux -= total_flux
+
+            # Update momentum field based on flow
+            if dy != 0:
+                self.flow_momentum_y += 0.1 * total_flux * dy
+            else:
+                self.flow_momentum_x += 0.1 * total_flux * dx
+
+        # Apply inflows from neighbors (reverse flux computation)
+        for idx, (dy, dx) in enumerate(self.neighbor_offsets):
+            # What neighbor cell (i-dy, i-dx) sends to us
+            neighbor_water = np.roll(np.roll(state.water_depth, -dy, axis=0), -dx, axis=1)
+            neighbor_H = np.roll(np.roll(H, -dy, axis=0), -dx, axis=1)
+            neighbor_g = np.roll(np.roll(g[:, :, idx], -dy, axis=0), -dx, axis=1)
+
+            # Flux from neighbor to us (their outflow is our inflow)
+            inflow = neighbor_g * np.maximum(neighbor_H - H, 0)
+            inflow = np.minimum(inflow, neighbor_water * 0.25)
+            net_flux += inflow
+
+        # Water sources
+        source_water = self.apply_water_sources(state)
+
+        # Rain events
+        rain_water = self.update_rain_event()
 
         # Loss terms: evaporation and seepage
         loss = (self.config.evaporation_rate + self.config.seepage_rate) * state.water_depth
 
         # Update water depth
-        new_water = state.water_depth + dt * (rainfall + boundary_inflow + net_flux - loss)
+        new_water = state.water_depth + dt * (
+            rainfall + boundary_inflow + source_water + rain_water + net_flux - loss
+        )
 
-        # FIX: Apply diffusion smoothing to prevent checkerboard oscillation
-        # This is a simple 3x3 box blur with center weight
+        # Decay momentum over time
+        self.flow_momentum_y *= 0.9
+        self.flow_momentum_x *= 0.9
+
+        # Apply smoothing to prevent numerical artifacts
         from scipy.ndimage import uniform_filter
-        diffusion_strength = 0.15  # Blend with neighbors
+        diffusion_strength = 0.1
         smoothed = uniform_filter(new_water, size=3, mode='reflect')
         new_water = (1 - diffusion_strength) * new_water + diffusion_strength * smoothed
 
-        # Ensure non-negative
-        new_water = np.maximum(new_water, 0.0)
+        # Clamp to valid range
+        new_water = np.clip(new_water, 0.0, self.config.max_water_depth)
 
         return new_water
+
+    def get_upstream_downstream_delta(self, state: GridState, dam_y: int, dam_x: int) -> float:
+        """
+        Compute the water level difference between upstream and downstream of a dam.
+        Useful for measuring dam effectiveness.
+        """
+        # Determine flow direction at this point (based on terrain gradient)
+        grad_y, grad_x = self.compute_terrain_gradient(state)
+
+        # Upstream is opposite to gradient direction
+        upstream_dy = 1 if grad_y[dam_y, dam_x] > 0 else -1
+        upstream_dx = 1 if grad_x[dam_y, dam_x] > 0 else -1
+
+        # Get upstream water (3x3 area)
+        upstream_water = 0.0
+        upstream_count = 0
+        for dy in range(-1, 2):
+            for dx in range(-1, 2):
+                ny, nx = dam_y + upstream_dy + dy, dam_x + upstream_dx + dx
+                if 0 <= ny < self.size and 0 <= nx < self.size:
+                    upstream_water += state.water_depth[ny, nx]
+                    upstream_count += 1
+
+        # Get downstream water (3x3 area)
+        downstream_water = 0.0
+        downstream_count = 0
+        for dy in range(-1, 2):
+            for dx in range(-1, 2):
+                ny, nx = dam_y - upstream_dy + dy, dam_x - upstream_dx + dx
+                if 0 <= ny < self.size and 0 <= nx < self.size:
+                    downstream_water += state.water_depth[ny, nx]
+                    downstream_count += 1
+
+        if upstream_count > 0 and downstream_count > 0:
+            return (upstream_water / upstream_count) - (downstream_water / downstream_count)
+        return 0.0
+
+    def compute_spatial_autocorrelation(self, state: GridState) -> float:
+        """
+        Compute spatial autocorrelation of water field.
+        Higher values indicate more coherent patterns (rivers/ponds).
+        """
+        water = state.water_depth
+        mean_water = np.mean(water)
+
+        if mean_water < 0.01:
+            return 0.0
+
+        # Compute neighbor similarity (Moran's I simplified)
+        total_similarity = 0.0
+        count = 0
+
+        for dy, dx in self.neighbor_offsets:
+            neighbor = np.roll(np.roll(water, dy, axis=0), dx, axis=1)
+            # Correlation between cell and neighbor
+            diff_self = water - mean_water
+            diff_neighbor = neighbor - mean_water
+            total_similarity += np.sum(diff_self * diff_neighbor)
+            count += water.size
+
+        variance = np.var(water)
+        if variance > 0:
+            return total_similarity / (count * variance)
+        return 0.0
 
 
 class VegetationEngine:
@@ -229,6 +496,149 @@ class VegetationEngine:
         return np.clip(new_moisture, 0.0, 1.0)
 
 
+class StructurePhysicsEngine:
+    """
+    Handles dam integrity, decay, overflow damage, and failure mechanics.
+
+    Features:
+    - Dams decay over time (need maintenance)
+    - Overflow causes damage (water pressure)
+    - Dams can break when integrity < threshold
+    - Broken dams cause flood events
+    """
+
+    def __init__(self, config: GridConfig):
+        self.config = config
+        self.size = config.grid_size
+
+        # Track dam lifetimes for metrics
+        self.dam_creation_step: Dict[Tuple[int, int], int] = {}
+        self.dam_failure_events: List[Tuple[int, int, int]] = []  # (y, x, step)
+        self.flood_events_prevented: int = 0
+        self.flood_events_caused: int = 0
+
+    def update_dam_integrity(self, state: GridState, current_step: int, dt: float) -> Tuple[np.ndarray, List[Tuple[int, int]]]:
+        """
+        Update dam integrity based on:
+        - Natural decay over time
+        - Water pressure (overflow) damage
+        - Failure when integrity drops below threshold
+
+        Returns:
+            (new_integrity, list of broken dam locations)
+        """
+        # Identify where dams exist (permeability < 1.0)
+        dam_mask = state.dam_permeability < 1.0
+
+        new_integrity = state.dam_integrity.copy()
+        broken_dams = []
+
+        # Only update where dams exist
+        if not np.any(dam_mask):
+            return new_integrity, broken_dams
+
+        # 1. Natural decay
+        decay = self.config.dam_decay_rate * dt
+        new_integrity = np.where(dam_mask, new_integrity - decay, new_integrity)
+
+        # 2. Overflow damage (water pressure)
+        overflow_mask = (state.water_depth > self.config.dam_overflow_threshold) & dam_mask
+        overflow_damage = self.config.dam_overflow_damage * dt
+        new_integrity = np.where(overflow_mask, new_integrity - overflow_damage, new_integrity)
+
+        # 3. Check for failures
+        failure_mask = (new_integrity < self.config.dam_failure_threshold) & dam_mask
+
+        if np.any(failure_mask):
+            # Record failure locations
+            failure_coords = np.argwhere(failure_mask)
+            for coord in failure_coords:
+                y, x = coord[0], coord[1]
+                broken_dams.append((y, x))
+                self.dam_failure_events.append((y, x, current_step))
+                self.flood_events_caused += 1
+
+                # Calculate dam lifetime
+                if (y, x) in self.dam_creation_step:
+                    lifetime = current_step - self.dam_creation_step[y, x]
+                    del self.dam_creation_step[(y, x)]
+
+        # Reset failed dams (permeability returns to 1.0)
+        # This is handled separately in step() to trigger flood
+
+        # Clamp integrity
+        new_integrity = np.clip(new_integrity, 0.0, 1.0)
+
+        # Reset integrity to 1.0 where there's no dam (permeability == 1.0)
+        new_integrity = np.where(~dam_mask, 1.0, new_integrity)
+
+        return new_integrity, broken_dams
+
+    def handle_dam_breaks(self, state: GridState, broken_dams: List[Tuple[int, int]]) -> np.ndarray:
+        """
+        Handle dam failures - reset permeability and cause flood surge.
+
+        Returns:
+            Updated water_depth after flood surge
+        """
+        new_water = state.water_depth.copy()
+
+        for y, x in broken_dams:
+            # Reset dam permeability (dam is gone)
+            state.dam_permeability[y, x] = 1.0
+            state.dam_integrity[y, x] = 1.0
+
+            # Flood surge - water rushes through
+            # Add extra water downstream (in the direction of flow)
+            surge = state.water_depth[y, x] * self.config.dam_break_flood_multiplier
+
+            # Spread surge to neighbors
+            for dy, dx in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                ny, nx = y + dy, x + dx
+                if 0 <= ny < self.size and 0 <= nx < self.size:
+                    new_water[ny, nx] += surge * 0.25
+
+        return new_water
+
+    def repair_dam(self, state: GridState, y: int, x: int) -> float:
+        """
+        Repair a dam at the given location.
+
+        Returns:
+            Amount of integrity restored
+        """
+        if state.dam_permeability[y, x] >= 1.0:
+            # No dam here
+            return 0.0
+
+        old_integrity = state.dam_integrity[y, x]
+        new_integrity = min(1.0, old_integrity + self.config.dam_repair_amount)
+        state.dam_integrity[y, x] = new_integrity
+
+        return new_integrity - old_integrity
+
+    def record_dam_creation(self, y: int, x: int, current_step: int):
+        """Record when a dam is created for lifetime tracking"""
+        if (y, x) not in self.dam_creation_step:
+            self.dam_creation_step[(y, x)] = current_step
+
+    def get_dam_lifetime_stats(self) -> Dict[str, float]:
+        """Get statistics about dam lifetimes"""
+        if not self.dam_failure_events:
+            return {"avg_lifetime": 0.0, "n_failures": 0}
+
+        lifetimes = []
+        for y, x, failure_step in self.dam_failure_events:
+            # Approximate - we don't track creation time perfectly
+            lifetimes.append(failure_step)  # Upper bound
+
+        return {
+            "avg_lifetime": np.mean(lifetimes) if lifetimes else 0.0,
+            "n_failures": len(self.dam_failure_events),
+            "flood_events_caused": self.flood_events_caused,
+        }
+
+
 @dataclass
 class AgentState:
     """Internal state of a single beaver agent"""
@@ -304,6 +714,7 @@ class MycoBeaverEnv(gym.Env):
         # Initialize engines
         self.hydrology_engine = HydrologyEngine(config.grid)
         self.vegetation_engine = VegetationEngine(config.grid)
+        self.structure_physics = StructurePhysicsEngine(config.grid)
 
         # Placeholders for subsystems (initialized in reset)
         self.pheromone_field = None
@@ -439,6 +850,7 @@ class MycoBeaverEnv(gym.Env):
 
         # Initialize dams (no dams initially)
         dam_permeability = np.ones((size, size))
+        dam_integrity = np.ones((size, size))  # Perfect integrity where there's no dam
 
         # Initialize lodges
         lodge_map = np.zeros((size, size), dtype=bool)
@@ -459,9 +871,13 @@ class MycoBeaverEnv(gym.Env):
             vegetation=vegetation,
             soil_moisture=soil_moisture,
             dam_permeability=dam_permeability,
+            dam_integrity=dam_integrity,
             lodge_map=lodge_map,
             agent_positions=agent_positions
         )
+
+        # Initialize water sources based on terrain
+        self.hydrology_engine.initialize_sources(elevation)
 
     def _generate_terrain(self, size: int) -> np.ndarray:
         """Generate natural-looking terrain using multi-octave noise"""
@@ -1365,6 +1781,32 @@ class MycoBeaverEnv(gym.Env):
         n_alive = sum(1 for a in self.agents if a.alive)
         n_structures = np.sum(self.grid_state.dam_permeability < 0.9)
 
+        # Hydrology metrics
+        water_autocorr = self.hydrology_engine.compute_spatial_autocorrelation(self.grid_state)
+        pools = self.hydrology_engine.detect_pools(self.grid_state)
+        n_pools = np.sum(pools & (self.grid_state.water_depth > self.config.grid.pool_threshold))
+
+        # Dam effectiveness (upstream-downstream delta for each dam)
+        dam_mask = self.grid_state.dam_permeability < 0.9
+        dam_effectiveness = 0.0
+        if np.any(dam_mask):
+            dam_coords = np.argwhere(dam_mask)
+            for y, x in dam_coords[:5]:  # Sample up to 5 dams
+                delta = self.hydrology_engine.get_upstream_downstream_delta(self.grid_state, y, x)
+                dam_effectiveness += max(0, delta)  # Positive delta = water pooling upstream
+            dam_effectiveness /= len(dam_coords[:5])
+
+        # Vegetation metrics
+        veg = self.grid_state.vegetation
+        veg_normalized = veg / (np.max(veg) + 1e-8)
+        # Vegetation entropy (higher = more variation, not flat)
+        veg_nonzero = veg_normalized[veg_normalized > 0.01]
+        if len(veg_nonzero) > 0:
+            veg_probs = veg_nonzero / np.sum(veg_nonzero)
+            veg_entropy = -np.sum(veg_probs * np.log(veg_probs + 1e-8))
+        else:
+            veg_entropy = 0.0
+
         info = {
             "step": self.current_step,
             "n_alive_agents": n_alive,
@@ -1372,6 +1814,14 @@ class MycoBeaverEnv(gym.Env):
             "total_vegetation": np.sum(self.grid_state.vegetation),
             "avg_water_level": np.mean(self.grid_state.water_depth),
             "episode_reward": self.episode_reward,
+            # Hydrology metrics
+            "water_spatial_autocorr": water_autocorr,
+            "n_water_pools": n_pools,
+            "dam_effectiveness": dam_effectiveness,
+            "rain_active": self.hydrology_engine.rain_active,
+            # Vegetation metrics
+            "vegetation_entropy": veg_entropy,
+            "vegetation_variance": float(np.var(veg)),
         }
 
         # === PHASE 3: Time-scale separation tracking ===

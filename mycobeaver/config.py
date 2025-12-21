@@ -37,6 +37,7 @@ class ActionType(Enum):
     DROP_RESOURCE = 13
     REST = 14
     ADVERTISE_PROJECT = 15
+    REPAIR_DAM = 16  # Repair/reinforce existing dam
 
 
 class ProjectType(Enum):
@@ -67,6 +68,25 @@ class GridConfig:
     rainfall_rate: float = 0.02  # Base rainfall per step
     rainfall_variance: float = 0.01  # Variance in rainfall
 
+    # === REALISTIC HYDROLOGY ===
+    # Water sources (springs)
+    n_water_sources: int = 3  # Number of springs
+    source_flow_rate: float = 0.5  # Water emitted per step per source
+    source_radius: float = 2.0  # Spread radius of source
+
+    # Gradient-based flow
+    flow_gravity: float = 0.3  # How strongly water flows downhill
+    flow_momentum: float = 0.1  # Inertia - water keeps flowing in same direction
+
+    # Pooling/accumulation
+    pool_threshold: float = 0.5  # Min water to count as pooled
+    max_water_depth: float = 5.0  # Maximum water depth per cell
+
+    # Rain events
+    rain_event_probability: float = 0.05  # Chance of rain each step
+    rain_event_intensity: float = 0.3  # Water added during rain
+    rain_event_duration: int = 10  # Steps rain lasts
+
     # Vegetation parameters
     vegetation_regrowth_rate: float = 0.01  # Base regrowth rate
     max_vegetation: float = 1.0  # Maximum biomass per cell
@@ -79,6 +99,18 @@ class GridConfig:
     # Dam parameters
     dam_permeability_effect: float = 0.5  # f(d_i, d_j) = 0.5 * (d_i + d_j)
     dam_build_amount: float = 0.1  # Δd per build action
+
+    # === STRUCTURE PHYSICS ===
+    # Dam integrity (1.0 = perfect, 0.0 = broken)
+    dam_initial_integrity: float = 1.0
+    dam_decay_rate: float = 0.002  # Integrity lost per step
+    dam_overflow_threshold: float = 3.0  # Water depth that damages dam
+    dam_overflow_damage: float = 0.1  # Integrity lost when overflowed
+    dam_repair_amount: float = 0.2  # Integrity restored per repair action
+    dam_failure_threshold: float = 0.1  # Below this, dam breaks
+
+    # Flood events caused by dam failure
+    dam_break_flood_multiplier: float = 2.0  # Water surge when dam breaks
 
     # Time step
     dt: float = 1.0  # Simulation time step
@@ -341,7 +373,7 @@ class PolicyNetworkConfig:
     fc_hidden_dims: List[int] = field(default_factory=lambda: [256, 128])
 
     # Action space
-    n_actions: int = 16  # Number of discrete actions
+    n_actions: int = 17  # Number of discrete actions (including REPAIR_DAM)
 
     # Learning parameters
     learning_rate: float = 3e-4
