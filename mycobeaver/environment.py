@@ -283,9 +283,11 @@ class HydrologyEngine:
             # 3. Momentum-based flux (water tends to keep flowing)
             # Match direction with momentum field
             if dy != 0:
-                momentum_flux = self.config.flow_momentum * self.flow_momentum_y * (dy > 0).astype(float)
+                direction_sign = 1.0 if dy > 0 else -1.0
+                momentum_flux = self.config.flow_momentum * self.flow_momentum_y * direction_sign
             else:
-                momentum_flux = self.config.flow_momentum * self.flow_momentum_x * (dx > 0).astype(float)
+                direction_sign = 1.0 if dx > 0 else -1.0
+                momentum_flux = self.config.flow_momentum * self.flow_momentum_x * direction_sign
 
             # Total flux to this neighbor
             total_flux = pressure_flux + gravity_flux + momentum_flux
