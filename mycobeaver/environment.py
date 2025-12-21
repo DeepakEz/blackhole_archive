@@ -2041,6 +2041,7 @@ class MycoBeaverEnv(gym.Env):
                         agent_rewards[key] += proximity_bonus
 
                 # DISPERSION BONUS: Reward for spreading out, not clustering
+                # GATED by building progress - can't just spread out and ignore building
                 if len(agent_positions) > 1:
                     y, x = agent.position
                     min_other_dist = float('inf')
@@ -2057,12 +2058,15 @@ class MycoBeaverEnv(gym.Env):
                     else:
                         # Partial bonus scaled by distance ratio
                         dispersion_bonus = self.config.reward.dispersion_bonus * (min_other_dist / min_desired)
+                    # Gate dispersion by building progress - encourage building first
+                    dispersion_bonus *= survival_multiplier
                     agent_rewards[key] += dispersion_bonus
 
             else:
                 agent_rewards[key] += self.config.reward.death_penalty
 
         # COVERAGE BONUS: Reward team for exploring more unique cells collectively
+        # GATED by building progress - exploration alone isn't enough
         if len(alive_agents) > 0:
             total_visited = set()
             for a in alive_agents:
@@ -2073,9 +2077,20 @@ class MycoBeaverEnv(gym.Env):
             # Bonus increases with coverage, shared among alive agents
             if coverage_fraction > 0.1:  # Only give bonus after exploring 10% of map
                 coverage_reward = self.config.reward.coverage_bonus * coverage_fraction
+                # Gate coverage reward by building progress
+                coverage_reward *= survival_multiplier
                 for agent in alive_agents:
                     key = f"agent_{agent.id}"
                     agent_rewards[key] += coverage_reward / len(alive_agents)
+
+        # === STAGNATION PENALTY ===
+        # Per-step penalty when no structures exist - prevents "existence optimization"
+        # This makes it impossible to get net positive reward without building
+        if n_structures == 0 and reward_config.stagnation_penalty < 0:
+            stagnation_cost = reward_config.stagnation_penalty
+            for agent in alive_agents:
+                key = f"agent_{agent.id}"
+                agent_rewards[key] += stagnation_cost
 
         # Combine
         combined = {}

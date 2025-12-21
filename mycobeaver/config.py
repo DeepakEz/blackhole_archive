@@ -361,9 +361,9 @@ class RewardConfig:
     vegetation_reward_multiplier: float = 0.1
     wetland_cell_bonus: float = 0.05  # Water + vegetation
 
-    # Project rewards (INCREASED significantly)
-    dam_completion_bonus: float = 100.0  # Was 50.0 - doubled
-    lodge_completion_bonus: float = 60.0  # Was 30.0 - doubled
+    # Project rewards (INCREASED 5x to dominate existence rewards)
+    dam_completion_bonus: float = 500.0  # Was 100.0 - 5x increase
+    lodge_completion_bonus: float = 300.0  # Was 60.0 - 5x increase
 
     # Resource rewards
     forage_reward: float = 0.5
@@ -391,7 +391,7 @@ class RewardConfig:
     coverage_bonus: float = 5.0  # Bonus for team covering more unique cells
 
     # Personal structure credit (fix free-rider problem)
-    personal_structure_bonus: float = 15.0  # Reward for structures YOU built
+    personal_structure_bonus: float = 100.0  # Reward for structures YOU built (increased from 15)
     structure_proximity_bonus: float = 0.5  # Reward for being near ANY structure
     structure_proximity_range: float = 10.0  # Range for proximity bonus
 
@@ -434,12 +434,14 @@ class RewardConfig:
     survival_target_structures: int = 5  # Target for full survival reward (if ramp=True)
 
     # Build milestone bonuses (one-time rewards)
-    first_structure_bonus: float = 50.0  # Bonus for building first structure
-    first_water_dam_bonus: float = 30.0  # Bonus for first dam near water
-    flow_impact_bonus: float = 20.0  # Bonus for dam that affects water flow
+    # INCREASED 10x to make building clearly more valuable than existence optimization
+    first_structure_bonus: float = 500.0  # Bonus for building first structure
+    first_water_dam_bonus: float = 300.0  # Bonus for first dam near water
+    flow_impact_bonus: float = 200.0  # Bonus for dam that affects water flow
 
     # Stagnation penalty (punish doing nothing)
-    stagnation_penalty: float = -0.1  # Per-step penalty when no build progress
+    # INCREASED 10x: -1.0 * 10 agents * 500 steps = -5000 if no structures
+    stagnation_penalty: float = -1.0  # Per-step penalty when no build progress
     stagnation_window: int = 100  # Steps to check for stagnation
 
     # === REWARD NORMALIZATION ===
