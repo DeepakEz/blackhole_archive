@@ -645,6 +645,178 @@ class StructurePhysicsEngine:
         }
 
 
+class TaskAllocationSystem:
+    """
+    Swarm-based task allocation to prevent redundant targeting.
+
+    Features:
+    - Maintains task board with resource/repair/build locations
+    - Agents claim tasks to prevent duplication
+    - Tasks have priority and expiration
+    - Metrics: collision rate, efficiency
+    """
+
+    def __init__(self, config: GridConfig):
+        self.config = config
+        self.size = config.grid_size
+
+        # Task types
+        self.TASK_RESOURCE = 0
+        self.TASK_REPAIR = 1
+        self.TASK_BUILD = 2
+
+        # Task board: Dict[task_id, task_info]
+        # task_info = {type, location, priority, claimed_by, created_step, expires_step}
+        self.tasks: Dict[int, Dict] = {}
+        self.next_task_id = 0
+
+        # Metrics
+        self.collision_count = 0  # Multiple agents targeting same location
+        self.successful_claims = 0
+        self.total_tasks_created = 0
+
+    def create_task(self, task_type: int, location: Tuple[int, int],
+                    priority: float, current_step: int, duration: int = 50) -> int:
+        """Create a new task on the board."""
+        task_id = self.next_task_id
+        self.next_task_id += 1
+
+        self.tasks[task_id] = {
+            "type": task_type,
+            "location": location,
+            "priority": priority,
+            "claimed_by": None,
+            "created_step": current_step,
+            "expires_step": current_step + duration,
+        }
+        self.total_tasks_created += 1
+        return task_id
+
+    def claim_task(self, task_id: int, agent_id: int) -> bool:
+        """Agent claims a task. Returns True if successful."""
+        if task_id not in self.tasks:
+            return False
+
+        task = self.tasks[task_id]
+        if task["claimed_by"] is None:
+            task["claimed_by"] = agent_id
+            self.successful_claims += 1
+            return True
+        elif task["claimed_by"] == agent_id:
+            return True  # Already claimed by this agent
+        else:
+            self.collision_count += 1
+            return False
+
+    def release_task(self, task_id: int, agent_id: int):
+        """Release a claimed task (agent died, finished, or abandoned)."""
+        if task_id in self.tasks:
+            task = self.tasks[task_id]
+            if task["claimed_by"] == agent_id:
+                task["claimed_by"] = None
+
+    def complete_task(self, task_id: int):
+        """Mark task as completed and remove from board."""
+        if task_id in self.tasks:
+            del self.tasks[task_id]
+
+    def get_available_tasks(self, task_type: Optional[int] = None,
+                            near_location: Optional[Tuple[int, int]] = None,
+                            max_distance: float = float('inf')) -> List[Tuple[int, Dict]]:
+        """Get unclaimed tasks, optionally filtered by type and location."""
+        available = []
+        for task_id, task in self.tasks.items():
+            if task["claimed_by"] is not None:
+                continue
+            if task_type is not None and task["type"] != task_type:
+                continue
+            if near_location is not None:
+                dist = np.sqrt((task["location"][0] - near_location[0])**2 +
+                              (task["location"][1] - near_location[1])**2)
+                if dist > max_distance:
+                    continue
+            available.append((task_id, task))
+
+        # Sort by priority (highest first)
+        available.sort(key=lambda x: x[1]["priority"], reverse=True)
+        return available
+
+    def get_agent_task(self, agent_id: int) -> Optional[Tuple[int, Dict]]:
+        """Get the task claimed by an agent."""
+        for task_id, task in self.tasks.items():
+            if task["claimed_by"] == agent_id:
+                return (task_id, task)
+        return None
+
+    def update(self, current_step: int, alive_agents: List[int]):
+        """Update task board: expire old tasks, release dead agent claims."""
+        expired = []
+        for task_id, task in self.tasks.items():
+            # Expire old tasks
+            if current_step > task["expires_step"]:
+                expired.append(task_id)
+            # Release claims by dead agents
+            elif task["claimed_by"] is not None and task["claimed_by"] not in alive_agents:
+                task["claimed_by"] = None
+
+        for task_id in expired:
+            del self.tasks[task_id]
+
+    def scan_and_create_tasks(self, grid_state, current_step: int):
+        """
+        Scan environment and create tasks for:
+        - High vegetation areas (resource tasks)
+        - Low-integrity dams (repair tasks)
+        """
+        # Limit task creation to prevent explosion
+        max_tasks_per_type = 20
+
+        # Count existing tasks by type
+        type_counts = {0: 0, 1: 0, 2: 0}
+        for task in self.tasks.values():
+            type_counts[task["type"]] = type_counts.get(task["type"], 0) + 1
+
+        # Create resource tasks for high vegetation areas
+        if type_counts[self.TASK_RESOURCE] < max_tasks_per_type:
+            high_veg = np.argwhere(grid_state.vegetation > 0.7)
+            for coord in high_veg[:5]:  # Limit to 5 new tasks
+                y, x = coord[0], coord[1]
+                # Check if already a task here
+                existing = any(t["location"] == (y, x) and t["type"] == self.TASK_RESOURCE
+                              for t in self.tasks.values())
+                if not existing:
+                    priority = grid_state.vegetation[y, x]
+                    self.create_task(self.TASK_RESOURCE, (y, x), priority, current_step)
+
+        # Create repair tasks for low-integrity dams
+        if type_counts[self.TASK_REPAIR] < max_tasks_per_type:
+            dam_mask = grid_state.dam_permeability < 0.9
+            low_integrity_mask = grid_state.dam_integrity < 0.5
+            repair_needed = dam_mask & low_integrity_mask
+            repair_coords = np.argwhere(repair_needed)
+            for coord in repair_coords[:5]:
+                y, x = coord[0], coord[1]
+                existing = any(t["location"] == (y, x) and t["type"] == self.TASK_REPAIR
+                              for t in self.tasks.values())
+                if not existing:
+                    # Higher priority for lower integrity
+                    priority = 1.0 - grid_state.dam_integrity[y, x]
+                    self.create_task(self.TASK_REPAIR, (y, x), priority, current_step)
+
+    def get_metrics(self) -> Dict[str, float]:
+        """Get task allocation metrics."""
+        n_claimed = sum(1 for t in self.tasks.values() if t["claimed_by"] is not None)
+        n_available = len(self.tasks) - n_claimed
+
+        return {
+            "total_tasks": len(self.tasks),
+            "claimed_tasks": n_claimed,
+            "available_tasks": n_available,
+            "collision_rate": self.collision_count / max(1, self.successful_claims + self.collision_count),
+            "total_collisions": self.collision_count,
+        }
+
+
 @dataclass
 class AgentState:
     """Internal state of a single beaver agent"""
@@ -721,6 +893,7 @@ class MycoBeaverEnv(gym.Env):
         self.hydrology_engine = HydrologyEngine(config.grid)
         self.vegetation_engine = VegetationEngine(config.grid)
         self.structure_physics = StructurePhysicsEngine(config.grid)
+        self.task_allocation = TaskAllocationSystem(config.grid)
 
         # Placeholders for subsystems (initialized in reset)
         self.pheromone_field = None
@@ -1561,6 +1734,13 @@ class MycoBeaverEnv(gym.Env):
                 0, self.grid_state.message_repair - decay
             )
 
+        # === TASK ALLOCATION: Update task board ===
+        alive_agent_ids = [a.id for a in self.agents if a.alive]
+        self.task_allocation.update(self.current_step, alive_agent_ids)
+        # Scan environment and create new tasks every 10 steps
+        if self.current_step % 10 == 0:
+            self.task_allocation.scan_and_create_tasks(self.grid_state, self.current_step)
+
     def _update_subsystems(self, dt: float):
         """
         Update pheromones, projects, physarum with PHASE 3 time-scale separation.
@@ -1999,6 +2179,14 @@ class MycoBeaverEnv(gym.Env):
             "dam_failures": dam_lifetime_stats.get("n_failures", 0),
             "flood_events_caused": dam_lifetime_stats.get("flood_events_caused", 0),
         }
+
+        # Task allocation metrics
+        task_metrics = self.task_allocation.get_metrics()
+        info.update({
+            "task_collision_rate": task_metrics["collision_rate"],
+            "tasks_available": task_metrics["available_tasks"],
+            "tasks_claimed": task_metrics["claimed_tasks"],
+        })
 
         # === PHASE 3: Time-scale separation tracking ===
         # Only include if tracking is enabled (useful for debugging/logging)
