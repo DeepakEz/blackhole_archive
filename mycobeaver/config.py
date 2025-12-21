@@ -40,6 +40,8 @@ class ActionType(Enum):
     REST = 14
     ADVERTISE_PROJECT = 15
     REPAIR_DAM = 16  # Repair/reinforce existing dam
+    PING_RESOURCE = 17  # Signal "resource here" to nearby agents
+    PING_REPAIR = 18  # Signal "repair needed" to nearby agents
 
 
 class ProjectType(Enum):
@@ -113,6 +115,12 @@ class GridConfig:
 
     # Flood events caused by dam failure
     dam_break_flood_multiplier: float = 2.0  # Water surge when dam breaks
+
+    # === COMMUNICATION CHANNELS ===
+    message_decay_rate: float = 0.1  # Message strength decay per step
+    message_initial_strength: float = 1.0  # Strength when message sent
+    message_radius: int = 3  # Broadcast radius around sender
+    message_energy_cost: float = 0.5  # Energy cost to send message
 
     # Time step
     dt: float = 1.0  # Simulation time step
@@ -395,7 +403,7 @@ class PolicyNetworkConfig:
     """Neural network policy configuration"""
     # Observation space
     local_view_radius: int = 5  # r - agent sees (2r+1) x (2r+1) grid
-    n_local_channels: int = 8  # elevation, water, vegetation, soil, dam, lodge, pheromone, physarum
+    n_local_channels: int = 10  # elevation, water, vegetation, soil, dam, lodge, pheromone, physarum, msg_resource, msg_repair
     n_global_features: int = 16  # Colony signals, project recruitment, etc.
     n_internal_features: int = 11  # Energy, satiety, wetness, 6 role flags, carrying_wood, has_project
 
@@ -404,7 +412,7 @@ class PolicyNetworkConfig:
     fc_hidden_dims: List[int] = field(default_factory=lambda: [256, 128])
 
     # Action space
-    n_actions: int = 17  # Number of discrete actions (including REPAIR_DAM)
+    n_actions: int = 19  # Number of discrete actions (including communication pings)
 
     # Learning parameters
     learning_rate: float = 3e-4

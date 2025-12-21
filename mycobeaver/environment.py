@@ -48,6 +48,12 @@ class GridState:
     # Agent presence (updated each step)
     agent_positions: np.ndarray  # Count of agents per cell
 
+    # Communication channels (decaying messages)
+    # Channel 0: "resource here" pings
+    # Channel 1: "need repair" pings
+    message_resource: np.ndarray = None  # Resource location messages [0, 1]
+    message_repair: np.ndarray = None  # Repair needed messages [0, 1]
+
 
 class HydrologyEngine:
     """
@@ -865,6 +871,10 @@ class MycoBeaverEnv(gym.Env):
         # Agent positions
         agent_positions = np.zeros((size, size), dtype=np.int32)
 
+        # Communication channels (decaying messages)
+        message_resource = np.zeros((size, size), dtype=np.float32)
+        message_repair = np.zeros((size, size), dtype=np.float32)
+
         self.grid_state = GridState(
             elevation=elevation,
             water_depth=water_depth,
@@ -873,7 +883,9 @@ class MycoBeaverEnv(gym.Env):
             dam_permeability=dam_permeability,
             dam_integrity=dam_integrity,
             lodge_map=lodge_map,
-            agent_positions=agent_positions
+            agent_positions=agent_positions,
+            message_resource=message_resource,
+            message_repair=message_repair
         )
 
         # Initialize water sources based on terrain
@@ -1419,6 +1431,41 @@ class MycoBeaverEnv(gym.Env):
                         agent.structures_built_by_me += 1  # Repairs count as contribution
             agent.energy -= config.build_energy_cost  # Same energy cost as building
 
+        elif action == ActionType.PING_RESOURCE:
+            # Send "resource here" message to nearby agents
+            # Useful when Scout finds vegetation
+            if self.grid_state.message_resource is not None:
+                radius = self.config.grid.message_radius
+                for dy in range(-radius, radius + 1):
+                    for dx in range(-radius, radius + 1):
+                        ny, nx = y + dy, x + dx
+                        if 0 <= ny < self.config.grid.grid_size and 0 <= nx < self.config.grid.grid_size:
+                            # Strength decreases with distance from sender
+                            dist = np.sqrt(dy**2 + dx**2)
+                            if dist <= radius:
+                                strength = self.config.grid.message_initial_strength * (1 - dist / (radius + 1))
+                                self.grid_state.message_resource[ny, nx] = max(
+                                    self.grid_state.message_resource[ny, nx], strength
+                                )
+            agent.energy -= self.config.grid.message_energy_cost
+
+        elif action == ActionType.PING_REPAIR:
+            # Send "repair needed" message to nearby agents
+            # Useful when any agent notices low-integrity dam
+            if self.grid_state.message_repair is not None:
+                radius = self.config.grid.message_radius
+                for dy in range(-radius, radius + 1):
+                    for dx in range(-radius, radius + 1):
+                        ny, nx = y + dy, x + dx
+                        if 0 <= ny < self.config.grid.grid_size and 0 <= nx < self.config.grid.grid_size:
+                            dist = np.sqrt(dy**2 + dx**2)
+                            if dist <= radius:
+                                strength = self.config.grid.message_initial_strength * (1 - dist / (radius + 1))
+                                self.grid_state.message_repair[ny, nx] = max(
+                                    self.grid_state.message_repair[ny, nx], strength
+                                )
+            agent.energy -= self.config.grid.message_energy_cost
+
         return reward
 
     def _update_agent_state(self, agent: AgentState):
@@ -1501,6 +1548,18 @@ class MycoBeaverEnv(gym.Env):
         # Update soil moisture
         new_moisture = self.vegetation_engine.update_soil_moisture(self.grid_state, dt)
         self.grid_state.soil_moisture = new_moisture
+
+        # === COMMUNICATION: Message decay ===
+        # Messages decay over time, requiring re-transmission for persistence
+        decay = self.config.grid.message_decay_rate * dt
+        if self.grid_state.message_resource is not None:
+            self.grid_state.message_resource = np.maximum(
+                0, self.grid_state.message_resource - decay
+            )
+        if self.grid_state.message_repair is not None:
+            self.grid_state.message_repair = np.maximum(
+                0, self.grid_state.message_repair - decay
+            )
 
     def _update_subsystems(self, dt: float):
         """
@@ -1759,6 +1818,12 @@ class MycoBeaverEnv(gym.Env):
                     # Physarum conductivity
                     if self.physarum_network is not None:
                         local_grid[7, oy, ox] = self.physarum_network.get_average_conductivity(ny, nx)
+
+                    # Communication channels
+                    if self.grid_state.message_resource is not None:
+                        local_grid[8, oy, ox] = self.grid_state.message_resource[ny, nx]
+                    if self.grid_state.message_repair is not None:
+                        local_grid[9, oy, ox] = self.grid_state.message_repair[ny, nx]
 
         # Normalize local grid
         local_grid = np.clip(local_grid, 0, 1)
