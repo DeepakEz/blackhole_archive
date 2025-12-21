@@ -12,11 +12,13 @@ import numpy as np
 
 
 class AgentRole(Enum):
-    """Beaver agent behavioral roles"""
-    SCOUT = "scout"
-    WORKER = "worker"
-    GUARDIAN = "guardian"
-    BUILDER = "builder"
+    """Beaver agent behavioral roles with specialized rewards"""
+    SCOUT = "scout"      # Exploration/coverage specialist
+    WORKER = "worker"    # General purpose
+    GUARDIAN = "guardian"  # Stay near lodge, protect
+    BUILDER = "builder"   # Structure construction
+    HAULER = "hauler"     # Resource delivery
+    MAINTAINER = "maintainer"  # Dam repair specialist
 
 
 class ActionType(Enum):
@@ -363,6 +365,30 @@ class RewardConfig:
     individual_weight: float = 0.5  # α - Was 0.3, increased for personal credit
     global_weight: float = 0.5  # β - Was 0.7, reduced to fix free-rider
 
+    # === ROLE-CONDITIONED REWARDS ===
+    # Each role gets bonus for actions matching their specialization
+    # This encourages behavioral differentiation
+
+    # Scout: exploration/coverage specialist
+    scout_exploration_multiplier: float = 2.0  # 2x exploration reward
+    scout_coverage_bonus: float = 2.0  # Extra for unique cells visited
+
+    # Builder: structure construction specialist
+    builder_build_multiplier: float = 1.5  # 1.5x build reward
+    builder_placement_bonus: float = 3.0  # Extra for strategic placement
+
+    # Hauler: resource delivery specialist
+    hauler_carry_multiplier: float = 2.0  # 2x for picking up resources
+    hauler_delivery_bonus: float = 3.0  # Extra for delivering to build site
+
+    # Maintainer: dam repair specialist
+    maintainer_repair_multiplier: float = 2.0  # 2x repair reward
+    maintainer_prevention_bonus: float = 5.0  # Extra for preventing failures
+
+    # Guardian: lodge protection
+    guardian_stay_multiplier: float = 1.5  # Bonus for staying near lodge
+    guardian_protection_radius: float = 5.0  # Distance to lodge for bonus
+
 
 @dataclass
 class PolicyNetworkConfig:
@@ -371,7 +397,7 @@ class PolicyNetworkConfig:
     local_view_radius: int = 5  # r - agent sees (2r+1) x (2r+1) grid
     n_local_channels: int = 8  # elevation, water, vegetation, soil, dam, lodge, pheromone, physarum
     n_global_features: int = 16  # Colony signals, project recruitment, etc.
-    n_internal_features: int = 8  # Energy, satiety, wetness, role, thresholds...
+    n_internal_features: int = 11  # Energy, satiety, wetness, 6 role flags, carrying_wood, has_project
 
     # Network architecture
     conv_channels: List[int] = field(default_factory=lambda: [32, 64, 64])

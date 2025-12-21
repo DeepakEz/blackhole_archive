@@ -1028,11 +1028,19 @@ class MycoBeaverEnv(gym.Env):
             )
             thresholds = np.clip(thresholds, 0.1, 0.9)
 
-            # Assign role (initial distribution)
-            if i < self.config.n_beavers * 0.2:
+            # Assign role with balanced distribution
+            # Distribution: 15% scout, 25% worker, 15% guardian, 20% builder, 15% hauler, 10% maintainer
+            role_idx = i % 6
+            if role_idx == 0:
                 role = AgentRole.SCOUT
-            elif i < self.config.n_beavers * 0.6:
+            elif role_idx == 1:
                 role = AgentRole.WORKER
+            elif role_idx == 2:
+                role = AgentRole.BUILDER
+            elif role_idx == 3:
+                role = AgentRole.HAULER
+            elif role_idx == 4:
+                role = AgentRole.MAINTAINER
             else:
                 role = AgentRole.GUARDIAN
 
@@ -1205,14 +1213,24 @@ class MycoBeaverEnv(gym.Env):
             # REWARD FIX: Exploration reward with diminishing returns
             new_pos = (new_y, new_x)
             visit_count = agent.get_visit_count(new_pos)
+            base_explore_reward = self.config.reward.exploration_reward
             if visit_count == 0:
                 # First visit - full exploration reward
-                reward += self.config.reward.exploration_reward
+                explore_reward = base_explore_reward
             else:
                 # Revisit - diminished reward
-                reward += self.config.reward.exploration_reward * (
+                explore_reward = base_explore_reward * (
                     self.config.reward.exploration_decay ** visit_count
                 )
+
+            # ROLE BONUS: Scout gets exploration multiplier
+            if agent.role == AgentRole.SCOUT:
+                explore_reward *= self.config.reward.scout_exploration_multiplier
+                # Extra coverage bonus for scouts visiting new cells
+                if visit_count == 0:
+                    explore_reward += self.config.reward.scout_coverage_bonus
+
+            reward += explore_reward
             agent.record_visit(new_pos)
 
             # REWARD FIX: Carrying wood proximity bonus
@@ -1235,7 +1253,15 @@ class MycoBeaverEnv(gym.Env):
 
         elif action == ActionType.STAY:
             # Minimal energy cost
-            pass
+            # ROLE BONUS: Guardian gets bonus for staying near lodge
+            if agent.role == AgentRole.GUARDIAN:
+                # Find nearest lodge
+                lodge_coords = np.argwhere(self.grid_state.lodge_map)
+                if len(lodge_coords) > 0:
+                    distances = np.sqrt((lodge_coords[:, 0] - y)**2 + (lodge_coords[:, 1] - x)**2)
+                    min_dist = distances.min()
+                    if min_dist < self.config.reward.guardian_protection_radius:
+                        reward += self.config.reward.guardian_stay_multiplier
 
         elif action == ActionType.REST:
             # Recover energy, especially in lodge
@@ -1285,7 +1311,13 @@ class MycoBeaverEnv(gym.Env):
                     self.project_manager.add_progress(agent.current_project, 1)
 
                 # Base build reward
-                reward += self.config.reward.build_action_reward
+                build_reward = self.config.reward.build_action_reward
+
+                # ROLE BONUS: Builder gets multiplier
+                if agent.role == AgentRole.BUILDER:
+                    build_reward *= self.config.reward.builder_build_multiplier
+
+                reward += build_reward
 
                 # REWARD FIX: Personal structure bonus
                 reward += self.config.reward.personal_structure_bonus
@@ -1293,8 +1325,12 @@ class MycoBeaverEnv(gym.Env):
                 # SHAPING: Water proximity bonus (dams near water are more useful)
                 water_nearby = self.grid_state.water_depth[max(0,y-2):min(self.config.grid.grid_size,y+3),
                                                            max(0,x-2):min(self.config.grid.grid_size,x+3)]
-                if np.any(water_nearby > 0.1):
+                strategic_placement = np.any(water_nearby > 0.1)
+                if strategic_placement:
                     reward += self.config.reward.build_action_reward * 0.5  # Near-water bonus
+                    # ROLE BONUS: Builder gets extra for strategic placement
+                    if agent.role == AgentRole.BUILDER:
+                        reward += self.config.reward.builder_placement_bonus
 
                 # SHAPING: Early infrastructure bonus (encourage faster emergence)
                 total_structures = np.sum(self.grid_state.dam_permeability < 0.9)
@@ -1322,11 +1358,20 @@ class MycoBeaverEnv(gym.Env):
                     harvested[y, x] += 0.1
                     agent.carrying_wood += 1
                     # REWARD FIX: Reward for picking up wood
-                    reward += self.config.reward.carry_wood_reward
+                    carry_reward = self.config.reward.carry_wood_reward
+
+                    # ROLE BONUS: Hauler gets multiplier for picking up resources
+                    if agent.role == AgentRole.HAULER:
+                        carry_reward *= self.config.reward.hauler_carry_multiplier
+
+                    reward += carry_reward
 
                     # SHAPING: Extra reward for picking up wood when structures exist (intent to contribute)
                     if np.any(self.grid_state.dam_permeability < 0.9):
                         reward += self.config.reward.carry_wood_reward * 0.5  # Structure existence bonus
+                        # ROLE BONUS: Hauler gets delivery bonus when structures exist
+                        if agent.role == AgentRole.HAULER:
+                            reward += self.config.reward.hauler_delivery_bonus
 
         elif action == ActionType.DROP_RESOURCE:
             # Drop carried resource
@@ -1355,11 +1400,20 @@ class MycoBeaverEnv(gym.Env):
 
                     if integrity_restored > 0:
                         # Base repair reward
-                        reward += self.config.reward.repair_action_reward
+                        repair_reward = self.config.reward.repair_action_reward
+
+                        # ROLE BONUS: Maintainer gets multiplier
+                        if agent.role == AgentRole.MAINTAINER:
+                            repair_reward *= self.config.reward.maintainer_repair_multiplier
+
+                        reward += repair_reward
 
                         # Critical repair bonus (more reward for saving dying dams)
                         if old_integrity < self.config.reward.repair_critical_threshold:
                             reward += self.config.reward.repair_critical_bonus
+                            # ROLE BONUS: Maintainer gets prevention bonus for critical repairs
+                            if agent.role == AgentRole.MAINTAINER:
+                                reward += self.config.reward.maintainer_prevention_bonus
 
                         # Track repair for agent
                         agent.structures_built_by_me += 1  # Repairs count as contribution
@@ -1727,14 +1781,17 @@ class MycoBeaverEnv(gym.Env):
         global_features[-2] = n_alive / self.config.n_beavers
         global_features[-1] = np.mean([a.energy for a in self.agents if a.alive]) / self.config.agent.initial_energy
 
-        # Internal state
+        # Internal state with all 6 role flags
         internal_state = np.array([
             agent.energy / self.config.agent.initial_energy,
             agent.satiety,
             agent.wetness,
-            float(agent.role.value == 'scout'),
-            float(agent.role.value == 'worker'),
-            float(agent.role.value == 'guardian'),
+            float(agent.role == AgentRole.SCOUT),
+            float(agent.role == AgentRole.WORKER),
+            float(agent.role == AgentRole.GUARDIAN),
+            float(agent.role == AgentRole.BUILDER),
+            float(agent.role == AgentRole.HAULER),
+            float(agent.role == AgentRole.MAINTAINER),
             agent.carrying_wood / self.config.agent.max_carry_wood,
             float(agent.current_project is not None),
         ], dtype=np.float32)
