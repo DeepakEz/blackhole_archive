@@ -116,7 +116,11 @@ class AgentConfig:
     threshold_std: float = 0.15
 
     # Carrying capacity
-    max_carry_wood: int = 1  # Wood units agent can carry
+    max_carry_wood: int = 2  # Wood units agent can carry (increased for faster building)
+
+    # Foraging thresholds (lowered for easier wood acquisition)
+    forage_min_vegetation: float = 0.05  # Min vegetation to forage
+    carry_min_vegetation: float = 0.1  # Min vegetation to pick up wood
 
     # Role parameters
     scout_explore_bonus: float = 1.5  # Scouts get bonus for exploration
@@ -302,8 +306,13 @@ class RewardConfig:
     carry_wood_distance_threshold: float = 5.0  # Distance for proximity bonus
 
     # Exploration reward (diminishing returns)
-    exploration_reward: float = 1.0  # Base reward for visiting new cells
+    exploration_reward: float = 2.0  # Base reward for visiting new cells (increased)
     exploration_decay: float = 0.5  # Multiplier for revisiting cells
+
+    # Dispersion bonus (encourage spreading out, not clustering)
+    dispersion_bonus: float = 0.5  # Reward per unit distance from other agents
+    min_dispersion_distance: float = 3.0  # Minimum desired distance between agents
+    coverage_bonus: float = 5.0  # Bonus for team covering more unique cells
 
     # Personal structure credit (fix free-rider problem)
     personal_structure_bonus: float = 15.0  # Reward for structures YOU built
@@ -339,7 +348,9 @@ class PolicyNetworkConfig:
     gamma: float = 0.99  # Discount factor
     gae_lambda: float = 0.95  # GAE parameter
     clip_epsilon: float = 0.2  # PPO clip
-    entropy_coef: float = 0.01
+    entropy_coef: float = 0.05  # Starting entropy (increased for exploration)
+    entropy_coef_final: float = 0.005  # Final entropy (lower for exploitation)
+    entropy_decay_episodes: int = 500  # Episodes over which to decay entropy
     value_coef: float = 0.5
     max_grad_norm: float = 0.5
 

@@ -268,10 +268,28 @@ class PPOTrainer:
         return self._base_lr
 
     def _get_modulated_entropy_coef(self) -> float:
-        """Get entropy coefficient modulated by Overmind signal."""
+        """Get entropy coefficient with scheduling and Overmind modulation.
+
+        Entropy scheduling: Start high (exploration), decay over time (exploitation).
+        This prevents the policy from collapsing to a local optimum early.
+        """
+        # Base entropy with scheduling
+        policy_config = self.config.policy
+        start_entropy = policy_config.entropy_coef
+        final_entropy = policy_config.entropy_coef_final
+        decay_episodes = policy_config.entropy_decay_episodes
+
+        # Linear decay from start to final over decay_episodes
+        if decay_episodes > 0 and self.episode_count < decay_episodes:
+            progress = self.episode_count / decay_episodes
+            scheduled_entropy = start_entropy + (final_entropy - start_entropy) * progress
+        else:
+            scheduled_entropy = final_entropy
+
+        # Apply Overmind modulation on top of schedule
         if self._signal_router is not None:
-            return self._base_entropy_coef * self._signal_router.get_entropy_scale()
-        return self._base_entropy_coef
+            return scheduled_entropy * self._signal_router.get_entropy_scale()
+        return scheduled_entropy
 
     def _apply_lr_modulation(self) -> None:
         """Apply Overmind's learning rate modulation to optimizer."""
@@ -470,13 +488,20 @@ class PPOTrainer:
 
         # === PHASE 6: Value target normalization ===
         if self.training_config.normalize_value_targets:
-            # Update running statistics
+            # Update running statistics using exponential moving average (EMA)
+            # Use fixed rate for stability instead of 1/count which is unstable early
             batch_mean = returns.mean().item()
-            batch_std = returns.std().item()
+            batch_std = max(returns.std().item(), 1e-4)  # Prevent zero std
             self._value_count += 1
-            alpha = 1.0 / self._value_count
+
+            # EMA rate: start with faster adaptation, then stabilize
+            # alpha = 0.1 early (fast learning), 0.01 later (stable)
+            alpha = max(0.01, min(0.1, 10.0 / (self._value_count + 100)))
             self._value_running_mean = (1 - alpha) * self._value_running_mean + alpha * batch_mean
             self._value_running_std = (1 - alpha) * self._value_running_std + alpha * batch_std
+
+            # Clamp running std to prevent extreme normalization
+            self._value_running_std = max(self._value_running_std, 1.0)
 
             # Normalize returns for value function
             normalized_returns = (returns - self._value_running_mean) / (self._value_running_std + 1e-8)
@@ -624,9 +649,15 @@ class PPOTrainer:
 
         # === PHASE 6: Compute explained variance ===
         # How well does value function predict returns?
+        # CRITICAL FIX: Use the same scale as training (normalized if normalize_value_targets=True)
         with torch.no_grad():
-            y_pred = old_values.cpu().numpy()
-            y_true = returns.cpu().numpy()
+            if self.training_config.normalize_value_targets:
+                # Value function predicts in normalized scale, so compare against normalized returns
+                y_pred = old_values.cpu().numpy()
+                y_true = normalized_returns.cpu().numpy()
+            else:
+                y_pred = old_values.cpu().numpy()
+                y_true = returns.cpu().numpy()
             var_y = np.var(y_true)
             explained_var = 1 - np.var(y_true - y_pred) / (var_y + 1e-8) if var_y > 0 else 0.0
 

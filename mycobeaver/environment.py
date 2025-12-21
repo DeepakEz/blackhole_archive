@@ -94,6 +94,8 @@ class HydrologyEngine:
         Update water depth for one time step.
 
         h_i(t+1) = h_i(t) + dt * (rainfall + boundary_inflow + inflows - outflows - losses)
+
+        FIX: Added diffusion smoothing to prevent checkerboard oscillation artifacts.
         """
         H = self.compute_water_surface_height(state)
         g = self.compute_conductance(state)
@@ -119,6 +121,13 @@ class HydrologyEngine:
         # Update water depth
         new_water = state.water_depth + dt * (rainfall + boundary_inflow + net_flux - loss)
 
+        # FIX: Apply diffusion smoothing to prevent checkerboard oscillation
+        # This is a simple 3x3 box blur with center weight
+        from scipy.ndimage import uniform_filter
+        diffusion_strength = 0.15  # Blend with neighbors
+        smoothed = uniform_filter(new_water, size=3, mode='reflect')
+        new_water = (1 - diffusion_strength) * new_water + diffusion_strength * smoothed
+
         # Ensure non-negative
         new_water = np.maximum(new_water, 0.0)
 
@@ -141,19 +150,46 @@ class VegetationEngine:
         """
         Update vegetation biomass.
 
-        Regrowth rate depends on soil moisture.
-        Harvesting by agents reduces vegetation.
+        FIX: Vegetation now depends on:
+        - Soil moisture (water availability)
+        - Elevation (lower = better drainage/water access)
+        - Proximity to water (riparian bonus)
+        - Harvesting pressure (creates scarcity)
         """
-        # Regrowth rate: higher moisture = faster growth
+        # === FIX: Carrying capacity varies by terrain ===
+        # Lower elevation = closer to water = higher carrying capacity
+        # Normalize elevation to [0, 1]
+        elev_norm = (state.elevation - state.elevation.min()) / (
+            state.elevation.max() - state.elevation.min() + 1e-8
+        )
+        # Carrying capacity: 0.4 to 1.0 based on elevation (lower = higher capacity)
+        carrying_capacity = 0.4 + 0.6 * (1 - elev_norm)
+
+        # === FIX: Water proximity bonus ===
+        # Areas near water grow faster
+        water_nearby = state.water_depth > 0.1
+        from scipy.ndimage import maximum_filter
+        riparian_zone = maximum_filter(water_nearby.astype(float), size=5)
+        riparian_bonus = 0.5 * riparian_zone  # Up to 50% growth bonus near water
+
+        # === Regrowth rate depends on moisture and terrain ===
         base_rate = self.config.vegetation_regrowth_rate
         moisture_bonus = self.config.moisture_effect_on_growth * state.soil_moisture
-        regrowth_rate = base_rate * (1 + moisture_bonus)
+        regrowth_rate = base_rate * (1 + moisture_bonus + riparian_bonus)
 
-        # Growth limited by distance from maximum
-        growth = regrowth_rate * (self.config.max_vegetation - state.vegetation)
+        # Growth limited by distance from carrying capacity (not fixed max)
+        max_veg = self.config.max_vegetation * carrying_capacity
+        growth = regrowth_rate * (max_veg - state.vegetation)
+
+        # === FIX: Water stress - vegetation dies if too much water ===
+        # Flooded areas lose vegetation
+        flood_damage = np.where(state.water_depth > 2.0, 0.1 * state.vegetation, 0.0)
+
+        # === FIX: Drought stress - vegetation dies without moisture ===
+        drought_damage = np.where(state.soil_moisture < 0.1, 0.05 * state.vegetation, 0.0)
 
         # Update vegetation
-        new_vegetation = state.vegetation + dt * growth - harvested
+        new_vegetation = state.vegetation + dt * growth - harvested - flood_damage - drought_damage
 
         # Clamp to valid range
         new_vegetation = np.clip(new_vegetation, 0.0, self.config.max_vegetation)
@@ -796,12 +832,17 @@ class MycoBeaverEnv(gym.Env):
         elif action == ActionType.FORAGE:
             # Harvest vegetation
             veg_available = self.grid_state.vegetation[y, x]
-            if veg_available > 0.1:
+            min_veg = config.forage_min_vegetation
+            if veg_available > min_veg:
                 harvest_amount = min(0.2, veg_available)
                 harvested[y, x] += harvest_amount
                 agent.satiety = min(1.0, agent.satiety + config.forage_satiety_gain)
                 agent.carrying_wood = min(config.max_carry_wood, agent.carrying_wood + 1)
                 reward += self.config.reward.forage_reward
+
+                # SHAPING: Extra reward for acquiring wood when near water (intent to build)
+                if self.grid_state.water_depth[y, x] > 0.1:
+                    reward += self.config.reward.forage_reward * 0.5  # Water proximity bonus
             agent.energy -= config.forage_energy_cost
 
         elif action == ActionType.BUILD_DAM:
@@ -825,6 +866,18 @@ class MycoBeaverEnv(gym.Env):
 
                 # REWARD FIX: Personal structure bonus
                 reward += self.config.reward.personal_structure_bonus
+
+                # SHAPING: Water proximity bonus (dams near water are more useful)
+                water_nearby = self.grid_state.water_depth[max(0,y-2):min(self.config.grid.grid_size,y+3),
+                                                           max(0,x-2):min(self.config.grid.grid_size,x+3)]
+                if np.any(water_nearby > 0.1):
+                    reward += self.config.reward.build_action_reward * 0.5  # Near-water bonus
+
+                # SHAPING: Early infrastructure bonus (encourage faster emergence)
+                total_structures = np.sum(self.grid_state.dam_permeability < 0.9)
+                if total_structures < 10:  # Extra bonus for first 10 structures
+                    early_bonus = self.config.reward.build_action_reward * (1.0 - total_structures / 10)
+                    reward += early_bonus
             agent.energy -= config.build_energy_cost
 
         elif action == ActionType.BUILD_LODGE:
@@ -841,11 +894,16 @@ class MycoBeaverEnv(gym.Env):
             # Pick up resource (if available and not already carrying)
             if agent.carrying_wood < config.max_carry_wood:
                 veg = self.grid_state.vegetation[y, x]
-                if veg > 0.2:
+                min_veg = config.carry_min_vegetation
+                if veg > min_veg:
                     harvested[y, x] += 0.1
                     agent.carrying_wood += 1
                     # REWARD FIX: Reward for picking up wood
                     reward += self.config.reward.carry_wood_reward
+
+                    # SHAPING: Extra reward for picking up wood when structures exist (intent to contribute)
+                    if np.any(self.grid_state.dam_permeability < 0.9):
+                        reward += self.config.reward.carry_wood_reward * 0.5  # Structure existence bonus
 
         elif action == ActionType.DROP_RESOURCE:
             # Drop carried resource
@@ -1064,6 +1122,10 @@ class MycoBeaverEnv(gym.Env):
         structure_mask = self.grid_state.dam_permeability < 0.9
         structure_coords = np.argwhere(structure_mask) if np.any(structure_mask) else None
 
+        # Collect alive agent positions for dispersion bonus
+        alive_agents = [a for a in self.agents if a.alive]
+        agent_positions = [(a.id, a.position) for a in alive_agents]
+
         # Per-agent survival rewards and proximity bonuses
         for agent in self.agents:
             key = f"agent_{agent.id}"
@@ -1083,8 +1145,43 @@ class MycoBeaverEnv(gym.Env):
                         # Diminishing returns for many nearby structures
                         proximity_bonus = self.config.reward.structure_proximity_bonus * np.sqrt(nearby_count)
                         agent_rewards[key] += proximity_bonus
+
+                # DISPERSION BONUS: Reward for spreading out, not clustering
+                if len(agent_positions) > 1:
+                    y, x = agent.position
+                    min_other_dist = float('inf')
+                    for other_id, other_pos in agent_positions:
+                        if other_id != agent.id:
+                            dist = np.sqrt((other_pos[0] - y)**2 + (other_pos[1] - x)**2)
+                            min_other_dist = min(min_other_dist, dist)
+
+                    # Reward if maintaining minimum distance from nearest other agent
+                    min_desired = self.config.reward.min_dispersion_distance
+                    if min_other_dist >= min_desired:
+                        # Full bonus for being well-dispersed
+                        dispersion_bonus = self.config.reward.dispersion_bonus
+                    else:
+                        # Partial bonus scaled by distance ratio
+                        dispersion_bonus = self.config.reward.dispersion_bonus * (min_other_dist / min_desired)
+                    agent_rewards[key] += dispersion_bonus
+
             else:
                 agent_rewards[key] += self.config.reward.death_penalty
+
+        # COVERAGE BONUS: Reward team for exploring more unique cells collectively
+        if len(alive_agents) > 0:
+            total_visited = set()
+            for a in alive_agents:
+                if a.cells_visited is not None:
+                    total_visited.update(a.cells_visited)
+            grid_size = self.config.grid.grid_size
+            coverage_fraction = len(total_visited) / (grid_size * grid_size)
+            # Bonus increases with coverage, shared among alive agents
+            if coverage_fraction > 0.1:  # Only give bonus after exploring 10% of map
+                coverage_reward = self.config.reward.coverage_bonus * coverage_fraction
+                for agent in alive_agents:
+                    key = f"agent_{agent.id}"
+                    agent_rewards[key] += coverage_reward / len(alive_agents)
 
         # Combine
         combined = {}
