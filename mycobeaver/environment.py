@@ -932,6 +932,9 @@ class MycoBeaverEnv(gym.Env):
         self._overmind_update_count = 0
         self._semantic_consolidation_count = 0
 
+        # === DIAGNOSTIC TRACKING ===
+        self._reset_diagnostics()
+
         # Random state
         self.np_random = None
 
@@ -1001,6 +1004,13 @@ class MycoBeaverEnv(gym.Env):
         self._physarum_update_count = 0
         self._overmind_update_count = 0
         self._semantic_consolidation_count = 0
+
+        # Reset diagnostic tracking
+        self._reset_diagnostics()
+
+        # Reset milestone tracking
+        self._milestone_first_structure = False
+        self._milestone_first_water_dam = False
 
         # Get initial observations
         observations = self._get_observations()
@@ -1965,11 +1975,56 @@ class MycoBeaverEnv(gym.Env):
         alive_agents = [a for a in self.agents if a.alive]
         agent_positions = [(a.id, a.position) for a in alive_agents]
 
+        # === CURRICULUM GATING ===
+        # Survival reward is gated by building progress
+        n_structures = np.sum(self.grid_state.dam_permeability < 0.9)
+        reward_config = self.config.reward
+
+        if reward_config.use_curriculum_gating:
+            if reward_config.survival_gate_ramp:
+                # Ramp up survival reward with structures
+                survival_multiplier = min(1.0, n_structures / reward_config.survival_target_structures)
+            else:
+                # Binary gate: full reward only if threshold met
+                survival_multiplier = 1.0 if n_structures >= reward_config.survival_gate_threshold else 0.0
+        else:
+            survival_multiplier = 1.0
+
+        # Track milestone bonuses (one-time rewards)
+        if not hasattr(self, '_milestone_first_structure'):
+            self._milestone_first_structure = False
+            self._milestone_first_water_dam = False
+
+        milestone_bonus = 0.0
+        if n_structures >= 1 and not self._milestone_first_structure:
+            milestone_bonus += reward_config.first_structure_bonus
+            self._milestone_first_structure = True
+
+        # Check for first dam near water
+        if n_structures >= 1 and not self._milestone_first_water_dam:
+            dam_mask = self.grid_state.dam_permeability < 0.9
+            dam_coords = np.argwhere(dam_mask)
+            for dy, dx in dam_coords:
+                # Check if water nearby
+                y_min, y_max = max(0, dy-2), min(self.config.grid.grid_size, dy+3)
+                x_min, x_max = max(0, dx-2), min(self.config.grid.grid_size, dx+3)
+                water_nearby = self.grid_state.water_depth[y_min:y_max, x_min:x_max]
+                if np.any(water_nearby > 0.1):
+                    milestone_bonus += reward_config.first_water_dam_bonus
+                    self._milestone_first_water_dam = True
+                    break
+
         # Per-agent survival rewards and proximity bonuses
         for agent in self.agents:
             key = f"agent_{agent.id}"
             if agent.alive:
-                agent_rewards[key] += self.config.reward.alive_reward_per_step
+                # Gated survival reward
+                gated_survival = self.config.reward.alive_reward_per_step * survival_multiplier
+                agent_rewards[key] += gated_survival
+
+                # Add milestone bonus (distributed among alive agents)
+                if milestone_bonus > 0:
+                    agent_rewards[key] += milestone_bonus / max(1, sum(1 for a in self.agents if a.alive))
 
                 # REWARD FIX: Structure proximity bonus (rewards being near ANY structure)
                 if structure_coords is not None and len(structure_coords) > 0:
@@ -2299,7 +2354,115 @@ class MycoBeaverEnv(gym.Env):
                 "last_semantic_consolidation": self._last_semantic_consolidation,
             }
 
+        # Add diagnostic metrics
+        info["diagnostics"] = self.get_diagnostics()
+
         return info
+
+    # === DIAGNOSTIC TRACKING METHODS ===
+
+    def _reset_diagnostics(self):
+        """Reset diagnostic counters for new episode."""
+        self._action_counts = {i: 0 for i in range(self.config.policy.n_actions)}
+        self._build_attempts = 0
+        self._build_successes = 0
+        self._cells_visited = set()
+        self._reward_survival = 0.0
+        self._reward_building = 0.0
+        self._reward_exploration = 0.0
+        self._reward_shaping = 0.0
+        self._steps_since_last_build = 0
+        self._last_structure_count = 0
+        self._episodes_without_new_structure = 0
+
+    def _track_action(self, agent_id: int, action: int, reward_components: dict):
+        """Track action for diagnostics."""
+        self._action_counts[action] = self._action_counts.get(action, 0) + 1
+
+        # Track reward components
+        self._reward_survival += reward_components.get("survival", 0.0)
+        self._reward_building += reward_components.get("building", 0.0)
+        self._reward_exploration += reward_components.get("exploration", 0.0)
+        self._reward_shaping += reward_components.get("shaping", 0.0)
+
+    def _track_build_attempt(self, success: bool):
+        """Track build attempt."""
+        self._build_attempts += 1
+        if success:
+            self._build_successes += 1
+            self._steps_since_last_build = 0
+        else:
+            self._steps_since_last_build += 1
+
+    def get_diagnostics(self) -> dict:
+        """Get diagnostic metrics for current episode."""
+        total_actions = sum(self._action_counts.values()) or 1
+
+        # Action percentages (map action indices to categories)
+        stay_actions = self._action_counts.get(8, 0)  # STAY
+        move_actions = sum(self._action_counts.get(i, 0) for i in range(8))  # MOVE_*
+        forage_actions = self._action_counts.get(9, 0)  # FORAGE
+        build_actions = self._action_counts.get(10, 0) + self._action_counts.get(11, 0)  # BUILD_DAM, BUILD_LODGE
+        repair_actions = self._action_counts.get(16, 0)  # REPAIR_DAM
+
+        # Calculate distance to water for alive agents
+        avg_distance_to_water = 0.0
+        max_wood = 0
+        total_wood = 0
+        alive_count = 0
+        for agent in self.agents:
+            if agent.alive:
+                alive_count += 1
+                y, x = agent.position
+                # Find nearest water
+                water_mask = self.grid_state.water_depth > 0.1
+                if np.any(water_mask):
+                    water_coords = np.argwhere(water_mask)
+                    distances = np.sqrt((water_coords[:, 0] - y)**2 + (water_coords[:, 1] - x)**2)
+                    avg_distance_to_water += distances.min()
+                # Track wood
+                total_wood += agent.carrying_wood
+                max_wood = max(max_wood, agent.carrying_wood)
+                # Track visited cells
+                self._cells_visited.add(agent.position)
+
+        if alive_count > 0:
+            avg_distance_to_water /= alive_count
+            avg_wood = total_wood / alive_count
+        else:
+            avg_wood = 0.0
+
+        # Exploration coverage
+        grid_area = self.config.grid.grid_size ** 2
+        exploration_coverage = len(self._cells_visited) / grid_area
+
+        # Check stagnation
+        current_structures = np.sum(self.grid_state.dam_permeability < 0.9)
+        if current_structures <= self._last_structure_count:
+            self._episodes_without_new_structure += 1
+        else:
+            self._episodes_without_new_structure = 0
+        self._last_structure_count = current_structures
+
+        return {
+            "action_stay_pct": stay_actions / total_actions,
+            "action_move_pct": move_actions / total_actions,
+            "action_forage_pct": forage_actions / total_actions,
+            "action_build_pct": build_actions / total_actions,
+            "action_repair_pct": repair_actions / total_actions,
+            "build_attempts": self._build_attempts,
+            "build_successes": self._build_successes,
+            "avg_wood_carried": avg_wood,
+            "max_wood_carried": max_wood,
+            "avg_distance_to_water": avg_distance_to_water,
+            "exploration_coverage": exploration_coverage,
+            "reward_survival": self._reward_survival,
+            "reward_building": self._reward_building,
+            "reward_exploration": self._reward_exploration,
+            "reward_shaping": self._reward_shaping,
+            "steps_since_last_build": self._steps_since_last_build,
+            "episodes_without_new_structure": self._episodes_without_new_structure,
+        }
 
     def render(self):
         """Render the environment"""

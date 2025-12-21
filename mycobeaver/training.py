@@ -90,6 +90,34 @@ class TrainingMetrics:
     avg_info_energy: float = 0.0
     total_info_spent: float = 0.0
 
+    # === DIAGNOSTIC METRICS (failure mode detection) ===
+    # Action distribution
+    action_stay_pct: float = 0.0
+    action_move_pct: float = 0.0
+    action_forage_pct: float = 0.0
+    action_build_pct: float = 0.0
+    action_repair_pct: float = 0.0
+
+    # Build behavior
+    build_attempts: int = 0
+    build_successes: int = 0
+    avg_wood_carried: float = 0.0
+    max_wood_carried: int = 0
+
+    # Spatial behavior
+    avg_distance_to_water: float = 0.0
+    exploration_coverage: float = 0.0  # Fraction of grid visited
+
+    # Reward breakdown
+    reward_survival: float = 0.0
+    reward_building: float = 0.0
+    reward_exploration: float = 0.0
+    reward_shaping: float = 0.0
+
+    # Stagnation indicators
+    episodes_without_new_structure: int = 0
+    steps_since_last_build: int = 0
+
 
 @dataclass
 class TrainingHistory:
@@ -186,6 +214,18 @@ class PPOTrainer:
         self._value_running_std = 1.0
         self._value_count = 0
 
+        # === REWARD NORMALIZATION ===
+        self._reward_running_mean = 0.0
+        self._reward_running_var = 1.0
+        self._reward_count = 0
+        self._reward_clip = config.reward.reward_clip_range if hasattr(config.reward, 'reward_clip_range') else 10.0
+
+        # === ADAPTIVE ENTROPY ===
+        self._stagnation_episodes = 0
+        self._last_structure_count = 0
+        self._entropy_boost_active = False
+        self._entropy_floor = 0.3  # Minimum entropy coefficient multiplier
+
         # Learning rate scheduler
         self.lr_scheduler = None
         if hasattr(torch.optim.lr_scheduler, 'CosineAnnealingLR'):
@@ -268,10 +308,12 @@ class PPOTrainer:
         return self._base_lr
 
     def _get_modulated_entropy_coef(self) -> float:
-        """Get entropy coefficient with scheduling and Overmind modulation.
+        """Get entropy coefficient with scheduling, Overmind modulation, and adaptive boost.
 
         Entropy scheduling: Start high (exploration), decay over time (exploitation).
         This prevents the policy from collapsing to a local optimum early.
+
+        Adaptive boost: If stagnation detected (no new structures), boost entropy.
         """
         # Base entropy with scheduling
         policy_config = self.config.policy
@@ -288,8 +330,58 @@ class PPOTrainer:
 
         # Apply Overmind modulation on top of schedule
         if self._signal_router is not None:
-            return scheduled_entropy * self._signal_router.get_entropy_scale()
-        return scheduled_entropy
+            modulated = scheduled_entropy * self._signal_router.get_entropy_scale()
+        else:
+            modulated = scheduled_entropy
+
+        # === ADAPTIVE ENTROPY ===
+        # If stagnating, boost entropy to encourage exploration
+        if self._entropy_boost_active:
+            stagnation_boost = 1.5 + 0.5 * min(self._stagnation_episodes / 10.0, 1.0)
+            modulated *= stagnation_boost
+
+        # Apply entropy floor
+        min_entropy = start_entropy * self._entropy_floor
+        return max(modulated, min_entropy)
+
+    def _normalize_reward(self, reward: float) -> float:
+        """Normalize reward using running statistics."""
+        if not self.config.reward.use_reward_normalization:
+            return reward
+
+        # Update running statistics (Welford's online algorithm)
+        self._reward_count += 1
+        delta = reward - self._reward_running_mean
+        self._reward_running_mean += delta / self._reward_count
+        delta2 = reward - self._reward_running_mean
+        self._reward_running_var += delta * delta2
+
+        # Get standard deviation
+        if self._reward_count > 1:
+            std = np.sqrt(self._reward_running_var / (self._reward_count - 1))
+        else:
+            std = 1.0
+
+        # Normalize and clip
+        normalized = (reward - self._reward_running_mean) / (std + 1e-8)
+        return float(np.clip(normalized, -self._reward_clip, self._reward_clip))
+
+    def _check_stagnation(self, info: dict) -> None:
+        """Check for stagnation and update adaptive entropy state."""
+        current_structures = info.get("n_structures", 0)
+
+        if current_structures <= self._last_structure_count:
+            self._stagnation_episodes += 1
+        else:
+            self._stagnation_episodes = 0
+            self._entropy_boost_active = False
+
+        self._last_structure_count = current_structures
+
+        # Activate entropy boost if stagnating for too long
+        stagnation_threshold = 20  # Episodes without progress
+        if self._stagnation_episodes >= stagnation_threshold:
+            self._entropy_boost_active = True
 
     def _apply_lr_modulation(self) -> None:
         """Apply Overmind's learning rate modulation to optimizer."""
@@ -355,10 +447,12 @@ class PPOTrainer:
             # Step environment
             next_observations, rewards, terminated, truncated, info = self.env.step(actions)
 
-            # Store rewards and dones
+            # Store rewards and dones (with optional normalization)
             for agent_key in actions.keys():
                 if len(self.buffers[agent_key]) > 0:
-                    self.buffers[agent_key].rewards[-1] = rewards.get(agent_key, 0.0)
+                    raw_reward = rewards.get(agent_key, 0.0)
+                    normalized_reward = self._normalize_reward(raw_reward)
+                    self.buffers[agent_key].rewards[-1] = normalized_reward
                     self.buffers[agent_key].dones[-1] = terminated or truncated
 
             total_reward += sum(rewards.values())
@@ -371,6 +465,20 @@ class PPOTrainer:
                 episode_lengths.append(current_episode_length)
                 current_episode_length = 0
                 self.episode_count += 1
+
+                # Check for stagnation (for adaptive entropy)
+                self._check_stagnation(info)
+
+                # Report entropy to Overmind for emergency detection
+                if self.env.overmind is not None and hasattr(self.env.overmind, 'report_entropy'):
+                    current_entropy = self._get_modulated_entropy_coef()
+                    self.env.overmind.report_entropy(current_entropy)
+
+                # Report structure count to Overmind for stagnation detection
+                if self.env.overmind is not None and hasattr(self.env.overmind, 'report_structure_count'):
+                    n_structures = info.get("n_structures", 0)
+                    build_attempts = info.get("diagnostics", {}).get("build_attempts", 0)
+                    self.env.overmind.report_structure_count(n_structures, build_attempts)
 
                 # Reset environment
                 observations, info = self.env.reset()

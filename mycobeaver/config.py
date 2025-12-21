@@ -426,6 +426,26 @@ class RewardConfig:
     guardian_stay_multiplier: float = 1.5  # Bonus for staying near lodge
     guardian_protection_radius: float = 5.0  # Distance to lodge for bonus
 
+    # === CURRICULUM GATING ===
+    # Survival reward is gated by building progress to prevent "existence optimization"
+    use_curriculum_gating: bool = True
+    survival_gate_threshold: int = 1  # Must have this many structures for full survival reward
+    survival_gate_ramp: bool = True  # Ramp up survival reward with structures (vs binary gate)
+    survival_target_structures: int = 5  # Target for full survival reward (if ramp=True)
+
+    # Build milestone bonuses (one-time rewards)
+    first_structure_bonus: float = 50.0  # Bonus for building first structure
+    first_water_dam_bonus: float = 30.0  # Bonus for first dam near water
+    flow_impact_bonus: float = 20.0  # Bonus for dam that affects water flow
+
+    # Stagnation penalty (punish doing nothing)
+    stagnation_penalty: float = -0.1  # Per-step penalty when no build progress
+    stagnation_window: int = 100  # Steps to check for stagnation
+
+    # === REWARD NORMALIZATION ===
+    use_reward_normalization: bool = True
+    reward_clip_range: float = 10.0  # Clip normalized rewards to [-clip, clip]
+
 
 @dataclass
 class PolicyNetworkConfig:
