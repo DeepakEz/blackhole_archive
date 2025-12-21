@@ -1905,39 +1905,55 @@ class MycoBeaverEnv(gym.Env):
         return sinks
 
     def _compute_global_reward(self) -> float:
-        """Compute global reward (wisdom signal components)"""
+        """Compute global reward (wisdom signal components)
+
+        GATED BY BUILDING PROGRESS: Positive global rewards only unlock
+        as structures are built. This prevents "existence optimization"
+        where agents get free reward from environment's natural state.
+        """
+        # === COMPUTE BUILDING PROGRESS MULTIPLIER ===
+        n_structures = np.sum(self.grid_state.dam_permeability < 0.9)
+        reward_config = self.config.reward
+
+        if reward_config.use_curriculum_gating:
+            if reward_config.survival_gate_ramp:
+                global_multiplier = min(1.0, n_structures / reward_config.survival_target_structures)
+            else:
+                global_multiplier = 1.0 if n_structures >= reward_config.survival_gate_threshold else 0.0
+        else:
+            global_multiplier = 1.0
+
         reward = 0.0
 
         # Hydrological stability (clip variance to prevent numerical overflow)
+        # PENALTIES always apply (not gated) - bad conditions should hurt
         water_variance = np.var(self.grid_state.water_depth)
         water_variance = np.clip(water_variance, 0.0, 100.0)  # Prevent overflow
         reward -= self.config.overmind.water_variance_weight * water_variance
 
-        # Flood penalty
+        # Flood penalty (always applies)
         flood_threshold = 1.0  # Water depth considered flooding
         flood_cells = np.sum(self.grid_state.water_depth > flood_threshold)
         reward -= self.config.reward.flood_penalty_per_cell * flood_cells
 
-        # Drought penalty
+        # Drought penalty (always applies)
         low_water = np.sum(self.grid_state.water_depth < 0.01)
         reward -= self.config.reward.drought_penalty_per_cell * low_water * 0.1
 
-        # Habitat richness
+        # Habitat richness - GATED by building progress
         wetland_cells = np.sum(
             (self.grid_state.water_depth > 0.1) &
             (self.grid_state.vegetation > 0.3)
         )
-        reward += self.config.reward.wetland_cell_bonus * wetland_cells
+        reward += self.config.reward.wetland_cell_bonus * wetland_cells * global_multiplier
 
-        # Vegetation total
+        # Vegetation total - GATED by building progress
         total_vegetation = np.sum(self.grid_state.vegetation)
         reward += self.config.reward.vegetation_reward_multiplier * total_vegetation / (
             self.config.grid.grid_size ** 2
-        )
+        ) * global_multiplier
 
-        # REWARD FIX: Global structure density bonus
-        # Reward the colony for total infrastructure (encourages coordination)
-        n_structures = np.sum(self.grid_state.dam_permeability < 0.9)
+        # Structure density bonus (NOT gated - this IS the building reward)
         reward += n_structures * 0.5  # Small bonus per structure cell
 
         # Project completions
@@ -2041,6 +2057,7 @@ class MycoBeaverEnv(gym.Env):
                         agent_rewards[key] += proximity_bonus
 
                 # DISPERSION BONUS: Reward for spreading out, not clustering
+                # GATED by building progress - can't just spread out and ignore building
                 if len(agent_positions) > 1:
                     y, x = agent.position
                     min_other_dist = float('inf')
@@ -2057,12 +2074,15 @@ class MycoBeaverEnv(gym.Env):
                     else:
                         # Partial bonus scaled by distance ratio
                         dispersion_bonus = self.config.reward.dispersion_bonus * (min_other_dist / min_desired)
+                    # Gate dispersion by building progress - encourage building first
+                    dispersion_bonus *= survival_multiplier
                     agent_rewards[key] += dispersion_bonus
 
             else:
                 agent_rewards[key] += self.config.reward.death_penalty
 
         # COVERAGE BONUS: Reward team for exploring more unique cells collectively
+        # GATED by building progress - exploration alone isn't enough
         if len(alive_agents) > 0:
             total_visited = set()
             for a in alive_agents:
@@ -2073,9 +2093,20 @@ class MycoBeaverEnv(gym.Env):
             # Bonus increases with coverage, shared among alive agents
             if coverage_fraction > 0.1:  # Only give bonus after exploring 10% of map
                 coverage_reward = self.config.reward.coverage_bonus * coverage_fraction
+                # Gate coverage reward by building progress
+                coverage_reward *= survival_multiplier
                 for agent in alive_agents:
                     key = f"agent_{agent.id}"
                     agent_rewards[key] += coverage_reward / len(alive_agents)
+
+        # === STAGNATION PENALTY ===
+        # Per-step penalty when no structures exist - prevents "existence optimization"
+        # This makes it impossible to get net positive reward without building
+        if n_structures == 0 and reward_config.stagnation_penalty < 0:
+            stagnation_cost = reward_config.stagnation_penalty
+            for agent in alive_agents:
+                key = f"agent_{agent.id}"
+                agent_rewards[key] += stagnation_cost
 
         # Combine
         combined = {}
@@ -2374,6 +2405,9 @@ class MycoBeaverEnv(gym.Env):
         self._steps_since_last_build = 0
         self._last_structure_count = 0
         self._episodes_without_new_structure = 0
+        # Time-to-first-structure tracking
+        self._time_to_first_structure = -1  # -1 means no structure built yet
+        self._had_structure_this_episode = False
 
     def _track_action(self, agent_id: int, action: int, reward_components: dict):
         """Track action for diagnostics."""
@@ -2391,6 +2425,10 @@ class MycoBeaverEnv(gym.Env):
         if success:
             self._build_successes += 1
             self._steps_since_last_build = 0
+            # Track time-to-first-structure
+            if not self._had_structure_this_episode:
+                self._time_to_first_structure = self.current_step
+                self._had_structure_this_episode = True
         else:
             self._steps_since_last_build += 1
 
@@ -2444,6 +2482,9 @@ class MycoBeaverEnv(gym.Env):
             self._episodes_without_new_structure = 0
         self._last_structure_count = current_structures
 
+        # Build success rate
+        build_success_rate = self._build_successes / max(1, self._build_attempts)
+
         return {
             "action_stay_pct": stay_actions / total_actions,
             "action_move_pct": move_actions / total_actions,
@@ -2452,6 +2493,8 @@ class MycoBeaverEnv(gym.Env):
             "action_repair_pct": repair_actions / total_actions,
             "build_attempts": self._build_attempts,
             "build_successes": self._build_successes,
+            "build_success_rate": build_success_rate,
+            "time_to_first_structure": self._time_to_first_structure,
             "avg_wood_carried": avg_wood,
             "max_wood_carried": max_wood,
             "avg_distance_to_water": avg_distance_to_water,
