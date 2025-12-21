@@ -66,6 +66,54 @@ class WisdomState:
     info_dissipation_history: List[float] = field(default_factory=list)
 
 
+@dataclass
+class EmergencyState:
+    """
+    Tracks emergency conditions for aggressive intervention.
+
+    Emergency types:
+    - SURVIVAL_CRISIS: Colony survival drops below threshold
+    - WATER_VOLATILITY: Water variance spikes suddenly
+    - ENTROPY_COLLAPSE: Policy entropy drops too low
+    - RESOURCE_FAMINE: Vegetation depleted critically
+
+    Each emergency triggers specific countermeasures.
+    """
+    # Emergency flags
+    survival_crisis: bool = False
+    water_volatility_spike: bool = False
+    entropy_collapse: bool = False
+    resource_famine: bool = False
+
+    # Severity levels (0-1, higher = worse)
+    survival_severity: float = 0.0
+    volatility_severity: float = 0.0
+    entropy_severity: float = 0.0
+    famine_severity: float = 0.0
+
+    # Emergency duration (steps in emergency state)
+    emergency_duration: int = 0
+    max_emergency_duration: int = 100
+
+    # Recovery tracking
+    recovery_steps: int = 0
+    recovery_threshold: int = 20  # Steps of stability needed to exit emergency
+
+    # Intervention history
+    interventions_triggered: int = 0
+    interventions_successful: int = 0
+
+    def is_in_emergency(self) -> bool:
+        """Check if any emergency is active."""
+        return (self.survival_crisis or self.water_volatility_spike or
+                self.entropy_collapse or self.resource_famine)
+
+    def get_overall_severity(self) -> float:
+        """Get combined emergency severity."""
+        return max(self.survival_severity, self.volatility_severity,
+                   self.entropy_severity, self.famine_severity)
+
+
 class Overmind:
     """
     Meta-controller for the beaver colony.
@@ -98,9 +146,23 @@ class Overmind:
         # Wisdom state
         self.wisdom_state = WisdomState()
 
+        # === EMERGENCY INTERVENTION SYSTEM ===
+        self.emergency_state = EmergencyState()
+
+        # Emergency thresholds
+        self.survival_threshold = 0.5  # Below this = survival crisis
+        self.volatility_threshold = 0.3  # Above this = water volatility spike
+        self.entropy_threshold = 0.3  # Below this = entropy collapse
+        self.famine_threshold = 0.2  # Below this = resource famine
+
+        # Emergency response strength
+        self.emergency_entropy_boost = 3.0  # Multiply entropy by this in emergency
+        self.emergency_lr_boost = 0.5  # Reduce LR by this factor in emergency
+
         # Observation history (for trend detection)
         self.observation_history: List[np.ndarray] = []
         self.wisdom_history: List[float] = []
+        self.entropy_history: List[float] = []  # Track policy entropy
 
         # Step counter
         self.step_count = 0
@@ -242,12 +304,202 @@ class Overmind:
 
         return wisdom
 
+    def _detect_emergencies(self, observation: np.ndarray) -> None:
+        """
+        Detect emergency conditions from current state.
+
+        Emergency types:
+        1. SURVIVAL_CRISIS: Colony health drops below threshold
+        2. WATER_VOLATILITY_SPIKE: Rapid change in water variance
+        3. ENTROPY_COLLAPSE: Policy entropy too low (if tracked)
+        4. RESOURCE_FAMINE: Vegetation/resources critically depleted
+
+        Each emergency has a severity level and duration tracking.
+        """
+        prev_in_emergency = self.emergency_state.is_in_emergency()
+
+        # === SURVIVAL CRISIS ===
+        # Triggered when colony health drops below threshold
+        survival = self.wisdom_state.colony_health
+        if survival < self.survival_threshold:
+            self.emergency_state.survival_crisis = True
+            # Severity scales with how far below threshold
+            self.emergency_state.survival_severity = (
+                (self.survival_threshold - survival) / self.survival_threshold
+            )
+        else:
+            self.emergency_state.survival_crisis = False
+            self.emergency_state.survival_severity = 0.0
+
+        # === WATER VOLATILITY SPIKE ===
+        # Triggered by rapid increase in water variance
+        if len(self.wisdom_state.water_variance_history) >= 3:
+            recent_variance = np.mean(self.wisdom_state.water_variance_history[-3:])
+            older_variance = np.mean(self.wisdom_state.water_variance_history[:-3]) \
+                if len(self.wisdom_state.water_variance_history) > 3 else recent_variance
+
+            variance_delta = recent_variance - older_variance
+            if variance_delta > self.volatility_threshold or recent_variance > 0.5:
+                self.emergency_state.water_volatility_spike = True
+                self.emergency_state.volatility_severity = min(1.0, variance_delta / 0.5)
+            else:
+                self.emergency_state.water_volatility_spike = False
+                self.emergency_state.volatility_severity = 0.0
+        else:
+            self.emergency_state.water_volatility_spike = False
+            self.emergency_state.volatility_severity = 0.0
+
+        # === ENTROPY COLLAPSE ===
+        # Triggered when policy entropy is too low (exploration exhausted)
+        # We track this via the entropy_history if available
+        if len(self.entropy_history) >= 3:
+            recent_entropy = np.mean(self.entropy_history[-3:])
+            if recent_entropy < self.entropy_threshold:
+                self.emergency_state.entropy_collapse = True
+                self.emergency_state.entropy_severity = (
+                    (self.entropy_threshold - recent_entropy) / self.entropy_threshold
+                )
+            else:
+                self.emergency_state.entropy_collapse = False
+                self.emergency_state.entropy_severity = 0.0
+        else:
+            self.emergency_state.entropy_collapse = False
+            self.emergency_state.entropy_severity = 0.0
+
+        # === RESOURCE FAMINE ===
+        # Triggered when vegetation/habitat quality is critically low
+        # Extract vegetation from observation
+        if len(observation) >= 4:
+            vegetation = observation[3]  # vegetation index in observation
+        else:
+            vegetation = 0.5  # fallback
+
+        habitat = self.wisdom_state.habitat_quality
+
+        if vegetation < self.famine_threshold or habitat < self.famine_threshold:
+            self.emergency_state.resource_famine = True
+            self.emergency_state.famine_severity = max(
+                (self.famine_threshold - vegetation) / self.famine_threshold,
+                (self.famine_threshold - habitat) / self.famine_threshold
+            )
+        else:
+            self.emergency_state.resource_famine = False
+            self.emergency_state.famine_severity = 0.0
+
+        # Track emergency duration
+        if self.emergency_state.is_in_emergency():
+            self.emergency_state.emergency_duration += 1
+            self.emergency_state.recovery_steps = 0
+
+            # Track intervention trigger
+            if not prev_in_emergency:
+                self.emergency_state.interventions_triggered += 1
+        else:
+            # Track recovery
+            if prev_in_emergency:
+                self.emergency_state.recovery_steps += 1
+                if self.emergency_state.recovery_steps >= self.emergency_state.recovery_threshold:
+                    # Successful recovery
+                    self.emergency_state.interventions_successful += 1
+                    self.emergency_state.emergency_duration = 0
+                    self.emergency_state.recovery_steps = 0
+
+    def _apply_emergency_countermeasures(self, signals: OvermindSignals) -> OvermindSignals:
+        """
+        Apply aggressive countermeasures during emergencies.
+
+        Countermeasures by emergency type:
+        - SURVIVAL_CRISIS: Slow learning, boost exploration, lower quorum
+        - WATER_VOLATILITY: Boost pheromone decay, faster physarum
+        - ENTROPY_COLLAPSE: Massive entropy boost
+        - RESOURCE_FAMINE: Focus on exploration, reduce build pressure
+
+        Countermeasures stack and scale with severity.
+        """
+        severity = self.emergency_state.get_overall_severity()
+
+        # === SURVIVAL CRISIS COUNTERMEASURES ===
+        if self.emergency_state.survival_crisis:
+            # Slow down learning to avoid catastrophic forgetting
+            signals["lr_scale"] *= self.emergency_lr_boost  # Reduce LR
+            # Boost exploration to find better strategies
+            signals["entropy_scale"] *= (1.0 + severity * 0.5)
+            # Lower quorum to speed up decisions
+            signals["quorum_multiplier"] = max(0.4, signals["quorum_multiplier"] - 0.2 * severity)
+
+        # === WATER VOLATILITY COUNTERMEASURES ===
+        if self.emergency_state.water_volatility_spike:
+            # Boost pheromone decay for faster adaptation
+            signals["pheromone_decay"] = min(0.5, signals["pheromone_decay"] * (1.5 + severity))
+            # Boost diffusion to spread information faster
+            signals["pheromone_diffusion"] = min(0.3, signals["pheromone_diffusion"] * 2.0)
+            # Speed up physarum adaptation
+            signals["physarum_tau"] = max(0.3, signals["physarum_tau"] * (1.0 - 0.3 * severity))
+
+        # === ENTROPY COLLAPSE COUNTERMEASURES ===
+        if self.emergency_state.entropy_collapse:
+            # Massive entropy boost to restore exploration
+            signals["entropy_scale"] *= self.emergency_entropy_boost
+            # Also increase semantic temperature for more diverse reasoning
+            signals["semantic_temperature"] = min(5.0, signals["semantic_temperature"] * 2.0)
+
+        # === RESOURCE FAMINE COUNTERMEASURES ===
+        if self.emergency_state.resource_famine:
+            # Boost exploration to find resources
+            signals["entropy_scale"] *= (1.0 + severity * 0.3)
+            # Increase dance gain to spread resource information
+            signals["dance_gain"] = min(5.0, signals["dance_gain"] * (1.5 + severity))
+            # Lower recruitment decay so resource signals persist
+            signals["recruitment_decay"] = max(0.01, signals["recruitment_decay"] * 0.5)
+
+        # === EMERGENCY DURATION ESCALATION ===
+        # If emergency persists, escalate countermeasures
+        if self.emergency_state.emergency_duration > 50:
+            # Escalation factor grows with duration
+            escalation = min(2.0, 1.0 + (self.emergency_state.emergency_duration - 50) / 100)
+            signals["entropy_scale"] *= escalation
+            signals["pheromone_decay"] *= escalation
+
+        # Cap escalation to prevent instability
+        if self.emergency_state.emergency_duration > self.emergency_state.max_emergency_duration:
+            # Max escalation reached - system may need external intervention
+            pass
+
+        return signals
+
+    def report_entropy(self, entropy: float) -> None:
+        """
+        Report current policy entropy for collapse detection.
+
+        Called by training loop to provide entropy information.
+        """
+        self.entropy_history.append(entropy)
+        if len(self.entropy_history) > 100:
+            self.entropy_history.pop(0)
+
+    def get_emergency_status(self) -> Dict[str, Any]:
+        """Get current emergency status for logging."""
+        return {
+            "in_emergency": self.emergency_state.is_in_emergency(),
+            "survival_crisis": self.emergency_state.survival_crisis,
+            "water_volatility_spike": self.emergency_state.water_volatility_spike,
+            "entropy_collapse": self.emergency_state.entropy_collapse,
+            "resource_famine": self.emergency_state.resource_famine,
+            "overall_severity": self.emergency_state.get_overall_severity(),
+            "emergency_duration": self.emergency_state.emergency_duration,
+            "interventions_triggered": self.emergency_state.interventions_triggered,
+            "interventions_successful": self.emergency_state.interventions_successful,
+        }
+
     def _decide_signals(self, observation: np.ndarray, wisdom: float) -> OvermindSignals:
         """
         Decide signal values based on wisdom and observations.
 
         Uses rule-based control to determine modulation factors.
         This does NOT touch rewards or policies - only rates and budgets.
+
+        EMERGENCY SYSTEM: Detects critical conditions and applies aggressive
+        countermeasures to prevent colony collapse.
         """
         # Start from current values
         signals: OvermindSignals = self._current_signals.copy()
@@ -263,6 +515,14 @@ class Overmind:
         health_issue = self.wisdom_state.colony_health < 0.7
         variance_issue = self.wisdom_state.water_variance > 0.2
         crisis = flood_issue or drought_issue or health_issue
+
+        # === EMERGENCY DETECTION ===
+        self._detect_emergencies(observation)
+        in_emergency = self.emergency_state.is_in_emergency()
+
+        # Apply emergency countermeasures if needed
+        if in_emergency:
+            signals = self._apply_emergency_countermeasures(signals)
 
         # === LEARNING RATE SCALE ===
         # Slow down learning if things are going well, speed up in crisis
@@ -395,7 +655,7 @@ class Overmind:
 
     def get_statistics(self) -> Dict[str, Any]:
         """Get overmind statistics for logging"""
-        return {
+        stats = {
             "step_count": self.step_count,
             "current_wisdom": self.wisdom_state.total_wisdom,
             "avg_wisdom": float(np.mean(self.wisdom_history)) if self.wisdom_history else 0.0,
@@ -412,14 +672,19 @@ class Overmind:
             "avg_agent_info_energy": self.wisdom_state.avg_agent_info_energy,
             "info_blocked_actions": self.wisdom_state.info_blocked_actions,
         }
+        # Add emergency status
+        stats.update(self.get_emergency_status())
+        return stats
 
     def reset(self):
         """Reset overmind to initial state"""
         self._current_signals = DEFAULT_OVERMIND_SIGNALS.copy()
         self.signal_router = SignalRouter()
         self.wisdom_state = WisdomState()
+        self.emergency_state = EmergencyState()
         self.observation_history.clear()
         self.wisdom_history.clear()
+        self.entropy_history.clear()
         self.step_count = 0
 
     def update(self, observation: np.ndarray, env) -> None:
