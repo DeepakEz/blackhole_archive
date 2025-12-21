@@ -76,6 +76,8 @@ class EmergencyState:
     - WATER_VOLATILITY: Water variance spikes suddenly
     - ENTROPY_COLLAPSE: Policy entropy drops too low
     - RESOURCE_FAMINE: Vegetation depleted critically
+    - BUILD_STAGNATION: No structures built for too long
+    - EXPLORATION_STAGNATION: Agents not exploring enough
 
     Each emergency triggers specific countermeasures.
     """
@@ -84,12 +86,16 @@ class EmergencyState:
     water_volatility_spike: bool = False
     entropy_collapse: bool = False
     resource_famine: bool = False
+    build_stagnation: bool = False  # No new structures for too long
+    exploration_stagnation: bool = False  # Agents not exploring
 
     # Severity levels (0-1, higher = worse)
     survival_severity: float = 0.0
     volatility_severity: float = 0.0
     entropy_severity: float = 0.0
     famine_severity: float = 0.0
+    build_stagnation_severity: float = 0.0
+    exploration_severity: float = 0.0
 
     # Emergency duration (steps in emergency state)
     emergency_duration: int = 0
@@ -103,15 +109,22 @@ class EmergencyState:
     interventions_triggered: int = 0
     interventions_successful: int = 0
 
+    # Stagnation tracking
+    steps_since_last_structure: int = 0
+    last_structure_count: int = 0
+    build_attempts: int = 0
+
     def is_in_emergency(self) -> bool:
         """Check if any emergency is active."""
         return (self.survival_crisis or self.water_volatility_spike or
-                self.entropy_collapse or self.resource_famine)
+                self.entropy_collapse or self.resource_famine or
+                self.build_stagnation or self.exploration_stagnation)
 
     def get_overall_severity(self) -> float:
         """Get combined emergency severity."""
         return max(self.survival_severity, self.volatility_severity,
-                   self.entropy_severity, self.famine_severity)
+                   self.entropy_severity, self.famine_severity,
+                   self.build_stagnation_severity, self.exploration_severity)
 
 
 class Overmind:
@@ -155,9 +168,15 @@ class Overmind:
         self.entropy_threshold = 0.3  # Below this = entropy collapse
         self.famine_threshold = 0.2  # Below this = resource famine
 
+        # Stagnation detection thresholds
+        self.build_stagnation_steps = 200  # Steps without new structure = stagnation
+        self.exploration_threshold = 0.1  # Below this coverage = exploration stagnation
+        self.zero_build_attempts_threshold = 50  # Steps with 0 build attempts = crisis
+
         # Emergency response strength
         self.emergency_entropy_boost = 3.0  # Multiply entropy by this in emergency
         self.emergency_lr_boost = 0.5  # Reduce LR by this factor in emergency
+        self.stagnation_entropy_boost = 2.0  # Boost for build stagnation
 
         # Observation history (for trend detection)
         self.observation_history: List[np.ndarray] = []
@@ -386,6 +405,35 @@ class Overmind:
             self.emergency_state.resource_famine = False
             self.emergency_state.famine_severity = 0.0
 
+        # === BUILD STAGNATION ===
+        # Triggered when no new structures for too long
+        # This requires external info about structure count
+        self.emergency_state.steps_since_last_structure += 1
+        if self.emergency_state.steps_since_last_structure > self.build_stagnation_steps:
+            self.emergency_state.build_stagnation = True
+            # Severity scales with duration beyond threshold
+            overtime = self.emergency_state.steps_since_last_structure - self.build_stagnation_steps
+            self.emergency_state.build_stagnation_severity = min(1.0, overtime / 200.0)
+        else:
+            self.emergency_state.build_stagnation = False
+            self.emergency_state.build_stagnation_severity = 0.0
+
+        # === EXPLORATION STAGNATION ===
+        # Triggered when agents aren't exploring enough
+        # Check if exploration coverage from observation is too low
+        if len(observation) >= 9:
+            # Use project count as proxy for activity (index 8 in observation)
+            project_count = observation[8]
+            if project_count < 0.1 and self.step_count > 100:
+                self.emergency_state.exploration_stagnation = True
+                self.emergency_state.exploration_severity = 0.5
+            else:
+                self.emergency_state.exploration_stagnation = False
+                self.emergency_state.exploration_severity = 0.0
+        else:
+            self.emergency_state.exploration_stagnation = False
+            self.emergency_state.exploration_severity = 0.0
+
         # Track emergency duration
         if self.emergency_state.is_in_emergency():
             self.emergency_state.emergency_duration += 1
@@ -452,6 +500,26 @@ class Overmind:
             # Lower recruitment decay so resource signals persist
             signals["recruitment_decay"] = max(0.01, signals["recruitment_decay"] * 0.5)
 
+        # === BUILD STAGNATION COUNTERMEASURES ===
+        if self.emergency_state.build_stagnation:
+            # Massive entropy boost to break out of exploitation loop
+            signals["entropy_scale"] *= self.stagnation_entropy_boost
+            # Lower quorum to make building easier
+            signals["quorum_multiplier"] = max(0.3, signals["quorum_multiplier"] - 0.3)
+            # Boost dance gain to encourage building recruitment
+            signals["dance_gain"] = min(5.0, signals["dance_gain"] * 2.0)
+            # Reduce LR to not reinforce bad behavior
+            signals["lr_scale"] *= 0.5
+
+        # === EXPLORATION STAGNATION COUNTERMEASURES ===
+        if self.emergency_state.exploration_stagnation:
+            # Boost entropy to encourage exploration
+            signals["entropy_scale"] *= 1.5
+            # Increase pheromone decay to forget old paths
+            signals["pheromone_decay"] = min(0.4, signals["pheromone_decay"] * 1.5)
+            # Higher semantic temperature for more diverse reasoning
+            signals["semantic_temperature"] = min(4.0, signals["semantic_temperature"] * 1.5)
+
         # === EMERGENCY DURATION ESCALATION ===
         # If emergency persists, escalate countermeasures
         if self.emergency_state.emergency_duration > 50:
@@ -477,6 +545,32 @@ class Overmind:
         if len(self.entropy_history) > 100:
             self.entropy_history.pop(0)
 
+    def report_structure_count(self, structure_count: int, build_attempts: int = 0) -> None:
+        """
+        Report current structure count for stagnation detection.
+
+        Called by training loop to track building progress.
+
+        Args:
+            structure_count: Total number of structures in environment
+            build_attempts: Number of build actions attempted this step
+        """
+        # Track build attempts
+        self.emergency_state.build_attempts += build_attempts
+
+        # Check if new structure was built
+        if structure_count > self.emergency_state.last_structure_count:
+            # Reset stagnation counter
+            self.emergency_state.steps_since_last_structure = 0
+            self.emergency_state.last_structure_count = structure_count
+            # Clear build stagnation if active
+            if self.emergency_state.build_stagnation:
+                self.emergency_state.build_stagnation = False
+                self.emergency_state.build_stagnation_severity = 0.0
+        else:
+            # Structure count didn't increase - this is tracked in _detect_emergencies
+            pass
+
     def get_emergency_status(self) -> Dict[str, Any]:
         """Get current emergency status for logging."""
         return {
@@ -485,7 +579,12 @@ class Overmind:
             "water_volatility_spike": self.emergency_state.water_volatility_spike,
             "entropy_collapse": self.emergency_state.entropy_collapse,
             "resource_famine": self.emergency_state.resource_famine,
+            "build_stagnation": self.emergency_state.build_stagnation,
+            "exploration_stagnation": self.emergency_state.exploration_stagnation,
             "overall_severity": self.emergency_state.get_overall_severity(),
+            "build_stagnation_severity": self.emergency_state.build_stagnation_severity,
+            "exploration_severity": self.emergency_state.exploration_severity,
+            "steps_since_last_structure": self.emergency_state.steps_since_last_structure,
             "emergency_duration": self.emergency_state.emergency_duration,
             "interventions_triggered": self.emergency_state.interventions_triggered,
             "interventions_successful": self.emergency_state.interventions_successful,
