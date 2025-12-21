@@ -1905,39 +1905,55 @@ class MycoBeaverEnv(gym.Env):
         return sinks
 
     def _compute_global_reward(self) -> float:
-        """Compute global reward (wisdom signal components)"""
+        """Compute global reward (wisdom signal components)
+
+        GATED BY BUILDING PROGRESS: Positive global rewards only unlock
+        as structures are built. This prevents "existence optimization"
+        where agents get free reward from environment's natural state.
+        """
+        # === COMPUTE BUILDING PROGRESS MULTIPLIER ===
+        n_structures = np.sum(self.grid_state.dam_permeability < 0.9)
+        reward_config = self.config.reward
+
+        if reward_config.use_curriculum_gating:
+            if reward_config.survival_gate_ramp:
+                global_multiplier = min(1.0, n_structures / reward_config.survival_target_structures)
+            else:
+                global_multiplier = 1.0 if n_structures >= reward_config.survival_gate_threshold else 0.0
+        else:
+            global_multiplier = 1.0
+
         reward = 0.0
 
         # Hydrological stability (clip variance to prevent numerical overflow)
+        # PENALTIES always apply (not gated) - bad conditions should hurt
         water_variance = np.var(self.grid_state.water_depth)
         water_variance = np.clip(water_variance, 0.0, 100.0)  # Prevent overflow
         reward -= self.config.overmind.water_variance_weight * water_variance
 
-        # Flood penalty
+        # Flood penalty (always applies)
         flood_threshold = 1.0  # Water depth considered flooding
         flood_cells = np.sum(self.grid_state.water_depth > flood_threshold)
         reward -= self.config.reward.flood_penalty_per_cell * flood_cells
 
-        # Drought penalty
+        # Drought penalty (always applies)
         low_water = np.sum(self.grid_state.water_depth < 0.01)
         reward -= self.config.reward.drought_penalty_per_cell * low_water * 0.1
 
-        # Habitat richness
+        # Habitat richness - GATED by building progress
         wetland_cells = np.sum(
             (self.grid_state.water_depth > 0.1) &
             (self.grid_state.vegetation > 0.3)
         )
-        reward += self.config.reward.wetland_cell_bonus * wetland_cells
+        reward += self.config.reward.wetland_cell_bonus * wetland_cells * global_multiplier
 
-        # Vegetation total
+        # Vegetation total - GATED by building progress
         total_vegetation = np.sum(self.grid_state.vegetation)
         reward += self.config.reward.vegetation_reward_multiplier * total_vegetation / (
             self.config.grid.grid_size ** 2
-        )
+        ) * global_multiplier
 
-        # REWARD FIX: Global structure density bonus
-        # Reward the colony for total infrastructure (encourages coordination)
-        n_structures = np.sum(self.grid_state.dam_permeability < 0.9)
+        # Structure density bonus (NOT gated - this IS the building reward)
         reward += n_structures * 0.5  # Small bonus per structure cell
 
         # Project completions
