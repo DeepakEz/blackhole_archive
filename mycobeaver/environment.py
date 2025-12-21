@@ -2405,6 +2405,9 @@ class MycoBeaverEnv(gym.Env):
         self._steps_since_last_build = 0
         self._last_structure_count = 0
         self._episodes_without_new_structure = 0
+        # Time-to-first-structure tracking
+        self._time_to_first_structure = -1  # -1 means no structure built yet
+        self._had_structure_this_episode = False
 
     def _track_action(self, agent_id: int, action: int, reward_components: dict):
         """Track action for diagnostics."""
@@ -2422,6 +2425,10 @@ class MycoBeaverEnv(gym.Env):
         if success:
             self._build_successes += 1
             self._steps_since_last_build = 0
+            # Track time-to-first-structure
+            if not self._had_structure_this_episode:
+                self._time_to_first_structure = self.current_step
+                self._had_structure_this_episode = True
         else:
             self._steps_since_last_build += 1
 
@@ -2475,6 +2482,9 @@ class MycoBeaverEnv(gym.Env):
             self._episodes_without_new_structure = 0
         self._last_structure_count = current_structures
 
+        # Build success rate
+        build_success_rate = self._build_successes / max(1, self._build_attempts)
+
         return {
             "action_stay_pct": stay_actions / total_actions,
             "action_move_pct": move_actions / total_actions,
@@ -2483,6 +2493,8 @@ class MycoBeaverEnv(gym.Env):
             "action_repair_pct": repair_actions / total_actions,
             "build_attempts": self._build_attempts,
             "build_successes": self._build_successes,
+            "build_success_rate": build_success_rate,
+            "time_to_first_structure": self._time_to_first_structure,
             "avg_wood_carried": avg_wood,
             "max_wood_carried": max_wood,
             "avg_distance_to_water": avg_distance_to_water,
