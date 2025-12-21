@@ -330,6 +330,11 @@ class RewardConfig:
     forage_reward: float = 0.5
     build_action_reward: float = 10.0  # Was 1.0 - increased 10x
 
+    # Repair rewards (maintenance is as important as building)
+    repair_action_reward: float = 8.0  # Reward for repairing dams
+    repair_critical_bonus: float = 5.0  # Extra reward for repairing low-integrity dams
+    repair_critical_threshold: float = 0.3  # Integrity below this triggers critical bonus
+
     # === NEW REWARDS (Fix missing incentives) ===
 
     # Carrying wood reward (with proximity bonus)

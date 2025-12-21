@@ -1266,9 +1266,16 @@ class MycoBeaverEnv(gym.Env):
             # REWARD FIX: Relaxed project requirement - agents can build freely
             if agent.carrying_wood > 0:
                 old_permeability = self.grid_state.dam_permeability[y, x]
+                is_new_dam = old_permeability >= 1.0  # No dam existed before
                 new_permeability = max(0.0, old_permeability - self.config.grid.dam_build_amount)
                 self.grid_state.dam_permeability[y, x] = new_permeability
                 agent.carrying_wood -= 1
+
+                # Track dam creation for lifetime statistics
+                if is_new_dam:
+                    self.structure_physics.record_dam_creation(y, x, self.current_step)
+                    # Initialize dam integrity
+                    self.grid_state.dam_integrity[y, x] = self.config.grid.dam_initial_integrity
 
                 # REWARD FIX: Track personal contribution (fixes free-rider)
                 agent.structures_built_by_me += 1
@@ -1335,6 +1342,28 @@ class MycoBeaverEnv(gym.Env):
             if self.config.training.use_projects and agent.role == AgentRole.SCOUT:
                 if agent.current_project is not None:
                     self.project_manager.advertise(agent.current_project, agent.id)
+
+        elif action == ActionType.REPAIR_DAM:
+            # Repair an existing dam at current location
+            if self.grid_state.dam_permeability[y, x] < 1.0:  # Dam exists here
+                if agent.carrying_wood > 0:
+                    agent.carrying_wood -= 1
+                    old_integrity = self.grid_state.dam_integrity[y, x]
+
+                    # Repair the dam
+                    integrity_restored = self.structure_physics.repair_dam(self.grid_state, y, x)
+
+                    if integrity_restored > 0:
+                        # Base repair reward
+                        reward += self.config.reward.repair_action_reward
+
+                        # Critical repair bonus (more reward for saving dying dams)
+                        if old_integrity < self.config.reward.repair_critical_threshold:
+                            reward += self.config.reward.repair_critical_bonus
+
+                        # Track repair for agent
+                        agent.structures_built_by_me += 1  # Repairs count as contribution
+            agent.energy -= config.build_energy_cost  # Same energy cost as building
 
         return reward
 
@@ -1403,6 +1432,17 @@ class MycoBeaverEnv(gym.Env):
         )
         # Clamp water depth to prevent numerical overflow (max 10 meters)
         self.grid_state.water_depth = np.clip(new_water, 0.0, 10.0)
+
+        # === STRUCTURE PHYSICS: Dam integrity, decay, and failure ===
+        new_integrity, broken_dams = self.structure_physics.update_dam_integrity(
+            self.grid_state, self.current_step, dt
+        )
+        self.grid_state.dam_integrity = new_integrity
+
+        # Handle dam failures (flood surge)
+        if broken_dams:
+            flood_water = self.structure_physics.handle_dam_breaks(self.grid_state, broken_dams)
+            self.grid_state.water_depth = np.clip(flood_water, 0.0, 10.0)
 
         # Update soil moisture
         new_moisture = self.vegetation_engine.update_soil_moisture(self.grid_state, dt)
@@ -1807,6 +1847,15 @@ class MycoBeaverEnv(gym.Env):
         else:
             veg_entropy = 0.0
 
+        # Structure physics metrics
+        dam_lifetime_stats = self.structure_physics.get_dam_lifetime_stats()
+        avg_dam_integrity = 0.0
+        low_integrity_count = 0
+        if np.any(dam_mask):
+            dam_integrities = self.grid_state.dam_integrity[dam_mask]
+            avg_dam_integrity = float(np.mean(dam_integrities))
+            low_integrity_count = int(np.sum(dam_integrities < self.config.grid.dam_failure_threshold * 2))
+
         info = {
             "step": self.current_step,
             "n_alive_agents": n_alive,
@@ -1822,6 +1871,11 @@ class MycoBeaverEnv(gym.Env):
             # Vegetation metrics
             "vegetation_entropy": veg_entropy,
             "vegetation_variance": float(np.var(veg)),
+            # Structure physics metrics
+            "avg_dam_integrity": avg_dam_integrity,
+            "low_integrity_dams": low_integrity_count,
+            "dam_failures": dam_lifetime_stats.get("n_failures", 0),
+            "flood_events_caused": dam_lifetime_stats.get("flood_events_caused", 0),
         }
 
         # === PHASE 3: Time-scale separation tracking ===
