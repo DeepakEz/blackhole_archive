@@ -67,12 +67,16 @@ class EnhancedSpacetime:
         
         # Precompute metric
         self.g = self._compute_metric()
-        
+
         # Structural field from beavers
         self.structural_field = np.zeros((config.n_r, config.n_theta, config.n_phi))
-        
+
         # Information density field (for ants)
         self.information_density = self._initialize_information_density()
+
+        # FIX #7: Epistemic stress field (affected by contradictions/congestion)
+        # High epistemic stress = harder to traverse, like gravitational stress
+        self.epistemic_stress = np.zeros((config.n_r, config.n_theta, config.n_phi))
     
     def _compute_metric(self) -> np.ndarray:
         """Compute Schwarzschild metric"""
@@ -158,18 +162,25 @@ class EnhancedSpacetime:
         return 1 / np.sqrt(max(1e-10, 1 - self.r_s / r))
     
     def add_structural_field(self, position: np.ndarray, strength: float, radius: float):
-        """Add beaver structural field"""
+        """Add beaver structural field with proper boundary handling"""
         i = np.argmin(np.abs(self.r - position[1]))
         j = np.argmin(np.abs(self.theta - position[2]))
         k = np.argmin(np.abs(self.phi - position[3]))
 
-        # Add Gaussian
+        # FIX: No-build zone at domain boundaries (r_max region)
+        # Prevents boundary exploit where agents "build at edge of map"
+        if i >= self.config.n_r - 3:  # Too close to outer boundary
+            return
+
+        # Add Gaussian with CLAMPED radial indices (no wrap-around)
         for di in range(-5, 6):
             for dj in range(-3, 4):
                 for dk in range(-3, 4):
-                    ii = (i + di) % self.config.n_r
-                    jj = max(0, min(self.config.n_theta-1, j + dj))
-                    kk = (k + dk) % self.config.n_phi
+                    # FIX: Clamp radial index instead of modulo wrap
+                    # Wrap is only valid for phi (azimuthal), not r (radial)
+                    ii = max(0, min(self.config.n_r - 1, i + di))
+                    jj = max(0, min(self.config.n_theta - 1, j + dj))
+                    kk = (k + dk) % self.config.n_phi  # Phi wraps correctly
 
                     distance = np.sqrt(di**2 + dj**2 + dk**2)
                     if distance < radius:
@@ -216,6 +227,60 @@ class EnhancedSpacetime:
         # Inverse relationship: high structure = low exploration priority
         return 1.0 / (1.0 + structural)
 
+    def decay_structural_field(self, dt: float, decay_rate: float = 0.01):
+        """
+        FIX #5: Structural field decays over time (maintenance cost).
+        Structures that aren't maintained fade away.
+        This prevents infinite accumulation and encourages active maintenance.
+        """
+        self.structural_field *= np.exp(-decay_rate * dt)
+
+        # Floor to zero for very small values (cleanup)
+        self.structural_field[self.structural_field < 0.01] = 0.0
+
+    def add_epistemic_stress(self, position: np.ndarray, stress: float, radius: float = 3.0):
+        """
+        FIX #7: Add epistemic stress at a position.
+        Called when contradictions or congestion occur.
+        """
+        i = np.argmin(np.abs(self.r - position[1]))
+        j = np.argmin(np.abs(self.theta - position[2]))
+        k = np.argmin(np.abs(self.phi - position[3]))
+
+        # Add Gaussian stress field
+        for di in range(-3, 4):
+            for dj in range(-2, 3):
+                for dk in range(-2, 3):
+                    ii = max(0, min(self.config.n_r - 1, i + di))
+                    jj = max(0, min(self.config.n_theta - 1, j + dj))
+                    kk = (k + dk) % self.config.n_phi
+
+                    distance = np.sqrt(di**2 + dj**2 + dk**2)
+                    if distance < radius:
+                        self.epistemic_stress[ii, jj, kk] += stress * np.exp(-distance**2 / (2 * radius**2))
+
+    def decay_epistemic_stress(self, dt: float, decay_rate: float = 0.05):
+        """FIX #7: Epistemic stress decays (contradictions can be resolved)"""
+        self.epistemic_stress *= np.exp(-decay_rate * dt)
+        self.epistemic_stress[self.epistemic_stress < 0.01] = 0.0
+
+    def get_epistemic_stress_at(self, position: np.ndarray) -> float:
+        """Get epistemic stress at position"""
+        i = np.argmin(np.abs(self.r - position[1]))
+        j = np.argmin(np.abs(self.theta - position[2]))
+        k = np.argmin(np.abs(self.phi - position[3]))
+        return self.epistemic_stress[i, j, k]
+
+    def get_total_traversal_cost(self, position: np.ndarray) -> float:
+        """
+        FIX #7: Combined traversal cost including epistemic stress.
+        High stress = epistemic gravity well, harder to traverse.
+        """
+        base_cost = self.get_movement_cost(position)
+        stress = self.get_epistemic_stress_at(position)
+        # Stress increases traversal cost
+        return base_cost * (1.0 + stress)
+
 # =============================================================================
 # ENHANCED AGENTS
 # =============================================================================
@@ -232,40 +297,58 @@ class Agent:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 class EnhancedBeaverAgent(Agent):
-    """Enhanced beaver with realistic construction"""
-    
+    """Enhanced beaver with realistic construction and scarcity"""
+
+    # Class-level material budget (shared across all beavers)
+    global_material_budget = 500.0  # Finite resources
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.structures_built = 0
         self.construction_cooldown = 0
-    
+
     def update(self, dt: float, spacetime: EnhancedSpacetime):
         # Cooldown
         if self.construction_cooldown > 0:
             self.construction_cooldown -= dt
-        
+
         # Check curvature
         curvature = spacetime.get_ricci_scalar(self.position)
 
         # FIX #1: Lower threshold by 1 order of magnitude (was 0.1, now 0.01)
-        # At M=1: threshold 0.01 triggers at r < ~5.4 (vs r < ~3.4 at 0.1)
-        # This allows beavers at moderate distances to build
         if curvature > 0.01 and self.energy > 0.05 and self.construction_cooldown <= 0:
-            # Build structure
-            spacetime.add_structural_field(self.position, 2.0, 3.0)
-            self.structures_built += 1
-            
-            # Energy economics: MUST be net positive for sustainability
-            construction_cost = 0.02  # Reduced from 0.05
-            energy_reward = 0.05      # Increased from 0.03
-            
-            self.energy -= construction_cost
-            self.energy += energy_reward
-            # Net per build: +0.03 (sustainable!)
-            
-            self.construction_cooldown = 1.0  # Wait 1 time unit
-            # During cooldown, lose: 1.0 * 0.005 = 0.005
-            # Net per cycle: +0.03 - 0.005 = +0.025 (positive!)
+            # FIX #5: Diminishing returns based on local structural density
+            local_structure = spacetime.get_structural_field_at(self.position)
+
+            # High existing structure = diminishing returns (strategic, not spam)
+            diminishing_factor = 1.0 / (1.0 + local_structure)
+
+            # Check global material budget
+            material_cost = 1.0  # Each build costs 1 unit of material
+            if EnhancedBeaverAgent.global_material_budget < material_cost:
+                # No materials left - cannot build
+                pass
+            elif diminishing_factor < 0.1:
+                # Too much structure already - not worth building here
+                pass
+            else:
+                # Build structure with diminishing strength
+                build_strength = 2.0 * diminishing_factor
+                spacetime.add_structural_field(self.position, build_strength, 3.0)
+                self.structures_built += 1
+
+                # Consume global materials
+                EnhancedBeaverAgent.global_material_budget -= material_cost
+
+                # Energy economics with diminishing returns
+                construction_cost = 0.02
+                energy_reward = 0.05 * diminishing_factor  # Less reward in saturated areas
+
+                self.energy -= construction_cost
+                self.energy += energy_reward
+
+                # Cooldown scales with local density (harder to build in crowded areas)
+                self.construction_cooldown = 1.0 + 0.5 * local_structure
         
         # Move toward high curvature regions
         # Sample nearby points
@@ -296,18 +379,19 @@ class EnhancedBeaverAgent(Agent):
 
 
 class EnhancedAntAgent(Agent):
-    """Enhanced ant with semantic graph building"""
-    
+    """Enhanced ant with semantic graph building and packet generation"""
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.current_vertex = None
         self.pheromone_deposits = 0
         self.path_history = []
-    
+        self.packets_generated = 0
+
     def update(self, dt: float, spacetime: EnhancedSpacetime, semantic_graph):
         # Sample local information
         info_density = spacetime.get_information_density(self.position)
-        
+
         # If high information density, create vertex
         if info_density > 0.5 and self.current_vertex is None:
             vertex_id = semantic_graph.add_vertex(
@@ -316,6 +400,20 @@ class EnhancedAntAgent(Agent):
             )
             self.current_vertex = vertex_id
             self.path_history.append(vertex_id)
+
+            # FIX #3: Generate packet when discovering salient vertex
+            if info_density > 0.5:  # Lower threshold to enable packet flow
+                packet = {
+                    'content': f"discovery_{vertex_id}",
+                    'salience': info_density,
+                    'confidence': min(1.0, info_density + 0.2),
+                    'created_at': 0.0,  # Would use simulation time
+                    'ttl': 50.0,  # FIX #4: Packet time-to-live
+                    'source_agent': self.id,
+                    'source_vertex': vertex_id
+                }
+                if semantic_graph.add_packet(vertex_id, packet):
+                    self.packets_generated += 1
         
         # If at vertex, deposit pheromone and move to neighbor
         if self.current_vertex is not None:
@@ -366,61 +464,80 @@ class EnhancedAntAgent(Agent):
 
 
 class EnhancedBeeAgent(Agent):
-    """Enhanced bee with packet transport"""
-    
+    """Enhanced bee with packet transport from queue-based economy"""
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.role = "scout"
         self.packet = None
         self.target_vertex = None
         self.packets_delivered = 0
+        self.packets_dropped = 0  # FIX #4: Track failed deliveries
         self.waggle_intensity = 0.0
-    
+
     def update(self, dt: float, spacetime: EnhancedSpacetime, semantic_graph, wormhole_position):
         if self.role == "scout":
-            # Find high-salience vertices
-            if np.random.rand() < 0.05:  # Occasionally check
+            # FIX #3: Find vertices with packets waiting (not just high salience)
+            if np.random.rand() < 0.1:  # Check more frequently
                 vertices = list(semantic_graph.graph.nodes())
                 if vertices:
-                    saliences = [semantic_graph.graph.nodes[v]['salience'] for v in vertices]
-                    max_idx = np.argmax(saliences)
-                    self.target_vertex = vertices[max_idx]
-                    self.waggle_intensity = saliences[max_idx]
-                    
-                    # Switch to forager
-                    if self.waggle_intensity > 0.6:
+                    # Prioritize vertices with packets AND high salience
+                    scores = []
+                    for v in vertices:
+                        queue_len = semantic_graph.get_queue_length(v)
+                        salience = semantic_graph.graph.nodes[v].get('salience', 0.5)
+                        # Score = queue_length * salience (packets at important nodes)
+                        scores.append(queue_len * salience + 0.1 * salience)
+
+                    if max(scores) > 0:
+                        max_idx = np.argmax(scores)
+                        self.target_vertex = vertices[max_idx]
+                        self.waggle_intensity = scores[max_idx]
                         self.role = "forager"
-        
+
         elif self.role == "forager":
             if self.packet is None and self.target_vertex is not None:
                 # Move to target vertex
                 target_pos = semantic_graph.graph.nodes[self.target_vertex]['position']
-                
-                # FIXED: Handle dimension mismatch (target_pos may be 16D, position is 4D)
+
+                # Handle dimension mismatch
                 if len(target_pos) > len(self.position):
                     target_pos = target_pos[:len(self.position)]
                 elif len(target_pos) < len(self.position):
                     target_pos = np.pad(target_pos, (0, len(self.position) - len(target_pos)))
-                
+
                 direction = target_pos - self.position
                 self.velocity = 0.3 * direction / (np.linalg.norm(direction) + 1e-6)
-                
+
                 # Check if reached
                 if np.linalg.norm(direction) < 1.0:
-                    # Collect packet
-                    self.packet = {
-                        'vertex': self.target_vertex,
-                        'salience': semantic_graph.graph.nodes[self.target_vertex]['salience'],
-                        'timestamp': 0.0  # Would use simulation time
-                    }
-                    # Head to wormhole
-                    self.role = "transporter"
-            
+                    # FIX #3: Pick up packet from queue (not fabricate one)
+                    self.packet = semantic_graph.get_packet(self.target_vertex)
+
+                    if self.packet is not None:
+                        # Got a real packet - transport it
+                        self.role = "transporter"
+                    else:
+                        # No packet available - go back to scouting
+                        self.target_vertex = None
+                        self.role = "scout"
+
         elif self.role == "transporter":
+            # FIX #4: Check packet TTL
+            if self.packet is not None:
+                self.packet['ttl'] -= dt
+                if self.packet['ttl'] <= 0:
+                    # Packet expired - drop it
+                    self.packets_dropped += 1
+                    self.packet = None
+                    self.target_vertex = None
+                    self.role = "scout"
+                    return
+
             # Move to wormhole
             direction = wormhole_position - self.position
             self.velocity = 0.5 * direction / (np.linalg.norm(direction) + 1e-6)
-            
+
             # Check if reached wormhole
             if np.linalg.norm(direction) < 2.0:
                 # Deliver packet
@@ -445,20 +562,49 @@ class EnhancedBeeAgent(Agent):
 # =============================================================================
 
 class SemanticGraph:
-    """Semantic graph maintained by ants"""
-    
+    """Semantic graph maintained by ants with packet economy"""
+
     def __init__(self):
         self.graph = nx.DiGraph()
         self.pheromones = {}  # (v1, v2) -> strength
         self.next_vertex_id = 0
-    
+        # FIX #3: Packet queues at vertices
+        self.packet_queues = {}  # vertex_id -> list of packets
+        self.max_queue_size = 10  # FIX #4: Queue capacity limit
+
     def add_vertex(self, position: np.ndarray, salience: float) -> int:
         """Add vertex to graph"""
         vertex_id = self.next_vertex_id
         self.next_vertex_id += 1
-        
-        self.graph.add_node(vertex_id, position=position, salience=salience)
+
+        self.graph.add_node(vertex_id, position=position, salience=salience,
+                           created_at=0.0, last_accessed=0.0)
+        self.packet_queues[vertex_id] = []  # Initialize packet queue
         return vertex_id
+
+    def add_packet(self, vertex_id: int, packet: dict) -> bool:
+        """
+        FIX #3: Add a packet to vertex queue.
+        Returns False if queue is full (congestion).
+        """
+        if vertex_id not in self.packet_queues:
+            return False
+        if len(self.packet_queues[vertex_id]) >= self.max_queue_size:
+            return False  # Queue full - packet dropped (congestion)
+        self.packet_queues[vertex_id].append(packet)
+        return True
+
+    def get_packet(self, vertex_id: int) -> dict:
+        """FIX #3: Get a packet from vertex queue (FIFO)"""
+        if vertex_id not in self.packet_queues:
+            return None
+        if len(self.packet_queues[vertex_id]) == 0:
+            return None
+        return self.packet_queues[vertex_id].pop(0)
+
+    def get_queue_length(self, vertex_id: int) -> int:
+        """Get queue length at vertex"""
+        return len(self.packet_queues.get(vertex_id, []))
     
     def add_edge(self, v1: int, v2: int, pheromone: float):
         """Add edge with pheromone"""
@@ -478,10 +624,90 @@ class SemanticGraph:
         """Decay all pheromones"""
         for edge in list(self.pheromones.keys()):
             self.pheromones[edge] *= np.exp(-decay_rate * dt)
-            
+
             # Remove if too weak
             if self.pheromones[edge] < 0.01:
                 del self.pheromones[edge]
+
+    def prune_graph(self, current_time: float, max_age: float = 100.0):
+        """
+        FIX #6: Prune vertices that haven't been accessed recently.
+        Cost of memory - old, unused beliefs are forgotten.
+        """
+        vertices_to_remove = []
+        for v in self.graph.nodes():
+            last_accessed = self.graph.nodes[v].get('last_accessed', 0.0)
+            age = current_time - last_accessed
+            if age > max_age and self.get_queue_length(v) == 0:
+                vertices_to_remove.append(v)
+
+        for v in vertices_to_remove:
+            self.graph.remove_node(v)
+            if v in self.packet_queues:
+                del self.packet_queues[v]
+
+        return len(vertices_to_remove)
+
+    def merge_nearby_vertices(self, distance_threshold: float = 1.0):
+        """
+        FIX #6: Merge vertices that are spatially close.
+        Prevents unbounded growth from redundant beliefs.
+        """
+        merged_count = 0
+        vertices = list(self.graph.nodes())
+
+        for i, v1 in enumerate(vertices):
+            if v1 not in self.graph:
+                continue
+            if 'position' not in self.graph.nodes[v1]:
+                continue
+            pos1 = self.graph.nodes[v1]['position']
+
+            for v2 in vertices[i+1:]:
+                if v2 not in self.graph:
+                    continue
+                if 'position' not in self.graph.nodes[v2]:
+                    continue
+                pos2 = self.graph.nodes[v2]['position']
+
+                # Check spatial distance
+                try:
+                    dist = np.linalg.norm(pos1 - pos2)
+                except (TypeError, ValueError):
+                    continue
+
+                if dist < distance_threshold:
+                    # Merge v2 into v1 (keep higher salience)
+                    sal1 = self.graph.nodes[v1].get('salience', 0.5)
+                    sal2 = self.graph.nodes[v2].get('salience', 0.5)
+
+                    # Keep the more salient vertex
+                    if sal2 > sal1:
+                        self.graph.nodes[v1]['salience'] = sal2
+                        self.graph.nodes[v1]['position'] = pos2
+
+                    # Transfer packets
+                    if v2 in self.packet_queues:
+                        for pkt in self.packet_queues[v2]:
+                            self.add_packet(v1, pkt)
+                        del self.packet_queues[v2]
+
+                    # Transfer edges
+                    for pred in list(self.graph.predecessors(v2)):
+                        if pred != v1 and pred in self.graph:
+                            self.add_edge(pred, v1, 0.5)
+                    for succ in list(self.graph.successors(v2)):
+                        if succ != v1 and succ in self.graph:
+                            self.add_edge(v1, succ, 0.5)
+
+                    self.graph.remove_node(v2)
+                    merged_count += 1
+
+        return merged_count
+
+    def get_total_queue_length(self) -> int:
+        """Get total packets waiting across all vertices"""
+        return sum(len(q) for q in self.packet_queues.values())
 
 # =============================================================================
 # ENHANCED SIMULATION ENGINE
@@ -621,6 +847,19 @@ class EnhancedSimulationEngine:
             # Add vertex to semantic graph
             vertex_id = self.semantic_graph.add_vertex(position, salience)
 
+            # FIX #3: Seed initial packets at high-salience vertices
+            if salience > 0.3:
+                packet = {
+                    'content': f"seed_discovery_{vertex_id}",
+                    'salience': salience,
+                    'confidence': 0.8,
+                    'created_at': 0.0,
+                    'ttl': 100.0,
+                    'source_agent': 'seed',
+                    'source_vertex': vertex_id
+                }
+                self.semantic_graph.add_packet(vertex_id, packet)
+
             # Connect to nearby vertices with initial pheromone
             if i > 0:
                 for prev_id in range(max(0, vertex_id - 3), vertex_id):
@@ -633,26 +872,50 @@ class EnhancedSimulationEngine:
         """Run enhanced simulation"""
         n_steps = int(self.config.t_max / self.config.dt)
         self.logger.info(f"Starting enhanced simulation: {n_steps} steps")
-        
+
+        # FIX #5: Reset material budget at simulation start
+        EnhancedBeaverAgent.global_material_budget = 500.0
+
         for step in tqdm(range(n_steps), desc="Enhanced Simulation"):
             t = step * self.config.dt
-            
+
             # Update all agents
             for beaver in self.agents['beavers']:
                 if beaver.state == "active":
                     beaver.update(self.config.dt, self.spacetime)
-            
+
             for ant in self.agents['ants']:
                 if ant.state == "active":
                     ant.update(self.config.dt, self.spacetime, self.semantic_graph)
-            
+
             for bee in self.agents['bees']:
                 if bee.state == "active":
                     bee.update(self.config.dt, self.spacetime, self.semantic_graph, self.wormhole_position)
-            
+
+            # FIX #5: Decay structural field (maintenance cost)
+            self.spacetime.decay_structural_field(self.config.dt)
+
+            # FIX #7: Decay epistemic stress
+            self.spacetime.decay_epistemic_stress(self.config.dt)
+
+            # FIX #7: Add epistemic stress at congested vertices
+            for v in self.semantic_graph.graph.nodes():
+                queue_len = self.semantic_graph.get_queue_length(v)
+                if queue_len > 5:  # Congestion threshold
+                    pos = self.semantic_graph.graph.nodes[v]['position']
+                    stress = 0.1 * (queue_len - 5)  # Stress proportional to congestion
+                    self.spacetime.add_epistemic_stress(pos, stress)
+
             # Decay pheromones
             self.semantic_graph.decay_pheromones(self.config.dt)
-            
+
+            # FIX #6: Periodically prune and merge graph
+            if step % 50 == 0 and step > 0:
+                pruned = self.semantic_graph.prune_graph(t)
+                merged = self.semantic_graph.merge_nearby_vertices()
+                if pruned > 0 or merged > 0:
+                    self.logger.debug(f"Graph maintenance: pruned={pruned}, merged={merged}")
+
             # Update statistics
             self.stats['total_energy'] = sum(
                 a.energy for agents in self.agents.values() for a in agents if a.state == "active"
@@ -663,15 +926,23 @@ class EnhancedSimulationEngine:
             self.stats['n_packets_transported'] = sum(
                 b.packets_delivered for b in self.agents['bees']
             )
+            self.stats['n_packets_dropped'] = sum(
+                b.packets_dropped for b in self.agents['bees']
+            )
+            self.stats['n_packets_generated'] = sum(
+                a.packets_generated for a in self.agents['ants']
+            )
+            self.stats['queue_length'] = self.semantic_graph.get_total_queue_length()
+            self.stats['material_remaining'] = EnhancedBeaverAgent.global_material_budget
             self.stats['n_vertices'] = self.semantic_graph.graph.number_of_nodes()
             self.stats['n_edges'] = self.semantic_graph.graph.number_of_edges()
-            
+
             # Record history
             if step % 10 == 0:
                 self.stats['energy_history'].append(self.stats['total_energy'])
                 self.stats['vertices_history'].append(self.stats['n_vertices'])
                 self.stats['structures_history'].append(self.stats['n_structures_built'])
-            
+
             # Log
             if step % 100 == 0:
                 self.logger.info(
@@ -679,7 +950,9 @@ class EnhancedSimulationEngine:
                     f"Energy={self.stats['total_energy']:.2f}, "
                     f"Vertices={self.stats['n_vertices']}, "
                     f"Structures={self.stats['n_structures_built']}, "
-                    f"Packets={self.stats['n_packets_transported']}"
+                    f"Packets={self.stats['n_packets_transported']}, "
+                    f"Queue={self.stats['queue_length']}, "
+                    f"Materials={self.stats['material_remaining']:.0f}"
                 )
         
         self.logger.info("Enhanced simulation complete")
