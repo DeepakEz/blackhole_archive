@@ -16,6 +16,7 @@ import pandas as pd
 from scipy import stats, signal
 from scipy.optimize import curve_fit
 import warnings
+import re
 warnings.filterwarnings('ignore')
 
 sys.path.append('.')
@@ -29,13 +30,38 @@ plt.rcParams['font.size'] = 10
 # CONFIGURATION
 # ============================================================================
 
-RESULTS_DIR = Path("enhanced_results")
+# Try multiple possible result directories
+POSSIBLE_DIRS = [
+    Path("enhanced_results"),
+    Path("results"),
+    Path("/tmp/simulation_test"),
+    Path("blackhole_archive_output"),
+]
+
+RESULTS_DIR = None
+for d in POSSIBLE_DIRS:
+    if d.exists():
+        # Check for report file
+        if (d / "enhanced_simulation_report.json").exists():
+            RESULTS_DIR = d
+            break
+        elif (d / "simulation_report.json").exists():
+            RESULTS_DIR = d
+            break
+
+if RESULTS_DIR is None:
+    print("❌ No results directory found. Tried:")
+    for d in POSSIBLE_DIRS:
+        print(f"  - {d}")
+    print("\nRun the simulation first, or specify the correct path.")
+    sys.exit(1)
+
 VIZ_DIR = RESULTS_DIR / "advanced_visualizations"
 VIZ_DIR.mkdir(exist_ok=True)
 
 COLORS = {
     'beavers': '#8B4513',
-    'ants': '#DC143C', 
+    'ants': '#DC143C',
     'bees': '#FFD700',
     'energy': '#2E86AB',
     'structures': '#A23B72',
@@ -51,31 +77,97 @@ print("="*80)
 print("🔬 BLACKHOLE ARCHIVE: COMPLETE ANALYSIS & VISUALIZATION")
 print("="*80)
 
-print("\n📂 Loading simulation data...")
+print(f"\n📂 Loading simulation data from {RESULTS_DIR}...")
 
-with open(RESULTS_DIR / "enhanced_simulation_report.json", 'r') as f:
+# Try different report file names
+report_file = None
+for name in ["enhanced_simulation_report.json", "simulation_report.json"]:
+    if (RESULTS_DIR / name).exists():
+        report_file = RESULTS_DIR / name
+        break
+
+if report_file is None:
+    print("❌ No report file found")
+    sys.exit(1)
+
+with open(report_file, 'r') as f:
     report = json.load(f)
 
-log_data = []
-with open(RESULTS_DIR / "enhanced_simulation.log", 'r') as f:
-    for line in f:
-        if "Step" in line and "Energy" in line:
-            parts = line.split(',')
-            step = int([p for p in parts if 'Step' in p][0].split('/')[0].split()[-1])
-            time = float([p for p in parts if 't=' in p][0].split('=')[1])
-            energy = float([p for p in parts if 'Energy=' in p][0].split('=')[1])
-            vertices = int([p for p in parts if 'Vertices=' in p][0].split('=')[1])
-            structures = int([p for p in parts if 'Structures=' in p][0].split('=')[1])
-            packets = int([p for p in parts if 'Packets=' in p][0].split('=')[1])
-            log_data.append({
-                'step': step, 'time': time, 'energy': energy,
-                'vertices': vertices, 'structures': structures, 'packets': packets
-            })
+# Try different log file names
+log_file = None
+for name in ["enhanced_simulation.log", "simulation.log"]:
+    if (RESULTS_DIR / name).exists():
+        log_file = RESULTS_DIR / name
+        break
 
-df = pd.DataFrame(log_data)
-config = report['config']
-stats = report['final_statistics']
-n_agents = report['n_agents_alive']
+log_data = []
+if log_file:
+    with open(log_file, 'r') as f:
+        for line in f:
+            if "Step" in line and "Energy" in line:
+                # Parse flexibly using regex
+                data = {}
+
+                # Extract step
+                step_match = re.search(r'Step\s+(\d+)', line)
+                if step_match:
+                    data['step'] = int(step_match.group(1))
+
+                # Extract t=
+                time_match = re.search(r't=([0-9.]+)', line)
+                if time_match:
+                    data['time'] = float(time_match.group(1))
+
+                # Extract Energy=
+                energy_match = re.search(r'Energy=([0-9.]+)', line)
+                if energy_match:
+                    data['energy'] = float(energy_match.group(1))
+
+                # Extract Vertices=
+                vertices_match = re.search(r'Vertices=(\d+)', line)
+                if vertices_match:
+                    data['vertices'] = int(vertices_match.group(1))
+
+                # Extract Structures=
+                structures_match = re.search(r'Structures=(\d+)', line)
+                if structures_match:
+                    data['structures'] = int(structures_match.group(1))
+
+                # Extract Packets=
+                packets_match = re.search(r'Packets=(\d+)', line)
+                if packets_match:
+                    data['packets'] = int(packets_match.group(1))
+
+                # Extract Queue= (new field)
+                queue_match = re.search(r'Queue=(\d+)', line)
+                if queue_match:
+                    data['queue'] = int(queue_match.group(1))
+
+                # Extract Materials= (new field)
+                materials_match = re.search(r'Materials=(\d+)', line)
+                if materials_match:
+                    data['materials'] = int(materials_match.group(1))
+
+                # Only add if we have the essential fields
+                if 'step' in data and 'energy' in data:
+                    log_data.append(data)
+
+if log_data:
+    df = pd.DataFrame(log_data)
+else:
+    # Create minimal dataframe from report
+    print("⚠️ No log data found, using report statistics only")
+    df = pd.DataFrame([{
+        'step': 0, 'time': 0,
+        'energy': report.get('final_statistics', {}).get('total_energy', 30),
+        'vertices': report.get('final_statistics', {}).get('n_vertices', 0),
+        'structures': report.get('final_statistics', {}).get('n_structures_built', 0),
+        'packets': report.get('final_statistics', {}).get('n_packets_transported', 0)
+    }])
+
+config = report.get('config', {})
+stats = report.get('final_statistics', {})
+n_agents = report.get('n_agents_alive', {'beavers': 0, 'ants': 0, 'bees': 0})
 
 print(f"✅ Loaded {len(df)} timesteps")
 
