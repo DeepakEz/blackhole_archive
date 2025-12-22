@@ -352,10 +352,11 @@ engine.load_checkpoint('checkpoint_1000.h5')
 Real-time visualization using Plotly/Mayavi:
 
 ```python
-from blackhole_archive_visualization import RealtimeVisualizer
+from blackhole_archive_visualizations import AdvancedVisualizer
 
-viz = RealtimeVisualizer(engine)
-viz.start()  # Opens interactive 3D view
+viz = AdvancedVisualizer(engine)
+viz.render_spacetime_3d()  # Renders 3D spacetime view
+viz.plot_energy_evolution()  # Plot agent energy over time
 ```
 
 ## Performance

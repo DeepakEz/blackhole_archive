@@ -402,11 +402,15 @@ class Packet:
             return False
         
         try:
-            from reedsolo import RSCodec
+            from reedsolo import RSCodec, ReedSolomonError
             rsc = RSCodec(10)
             self.data = rsc.decode(self.error_correction_code)[0]
             return True
-        except:
+        except ImportError:
+            # reedsolo library not installed
+            return False
+        except (ReedSolomonError, IndexError, ValueError) as e:
+            # Decoding failed - data is too corrupted to recover
             return False
     
     def serialize(self) -> bytes:

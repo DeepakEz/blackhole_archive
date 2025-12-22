@@ -245,12 +245,16 @@ class SemanticGraphVisualizer:
         elif self.config.layout_algorithm == "kamada_kawai":
             try:
                 return nx.kamada_kawai_layout(G)
-            except:
+            except (nx.NetworkXError, ValueError, np.linalg.LinAlgError) as e:
+                # Fall back to spring layout if kamada_kawai fails
+                # (can fail on disconnected graphs or numerical issues)
                 return nx.spring_layout(G)
         elif self.config.layout_algorithm == "spectral":
             try:
                 return nx.spectral_layout(G)
-            except:
+            except (nx.NetworkXError, ValueError, np.linalg.LinAlgError) as e:
+                # Fall back to spring layout if spectral fails
+                # (can fail on graphs without enough structure)
                 return nx.spring_layout(G)
         else:
             return nx.spring_layout(G)

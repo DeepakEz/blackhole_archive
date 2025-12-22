@@ -114,6 +114,9 @@ class EmergencyState:
     last_structure_count: int = 0
     build_attempts: int = 0
 
+    # Escalation tracking
+    max_escalation_reached: bool = False
+
     def is_in_emergency(self) -> bool:
         """Check if any emergency is active."""
         return (self.survival_crisis or self.water_volatility_spike or
@@ -530,8 +533,12 @@ class Overmind:
 
         # Cap escalation to prevent instability
         if self.emergency_state.emergency_duration > self.emergency_state.max_emergency_duration:
-            # Max escalation reached - system may need external intervention
-            pass
+            # Max escalation reached - cap signals at emergency values
+            # This prevents runaway signal amplification
+            signals["entropy_scale"] = min(signals["entropy_scale"], 2.0)
+            signals["learning_rate_scale"] = max(signals["learning_rate_scale"], 0.5)
+            # Log that we've hit max escalation (could trigger external alert)
+            self.emergency_state.max_escalation_reached = True
 
         return signals
 
@@ -568,8 +575,9 @@ class Overmind:
                 self.emergency_state.build_stagnation = False
                 self.emergency_state.build_stagnation_severity = 0.0
         else:
-            # Structure count didn't increase - this is tracked in _detect_emergencies
-            pass
+            # Structure count didn't increase - increment stagnation counter
+            # This is used by _detect_emergencies to identify build stagnation
+            self.emergency_state.steps_since_last_structure += 1
 
     def get_emergency_status(self) -> Dict[str, Any]:
         """Get current emergency status for logging."""
@@ -811,8 +819,10 @@ class Overmind:
 
         # Apply signals to physarum network (adaptation rates)
         if hasattr(env, 'physarum_network') and env.physarum_network is not None:
-            # tau and flow_exp would be used during physarum.update()
-            pass
+            # Apply tau (decay rate) and flow_exp to physarum config
+            # These affect how the network adapts its conductivity
+            env.physarum_network.config.decay_rate = signals["physarum_tau"]
+            env.physarum_network.config.flow_exponent = signals["physarum_flow_exp"]
 
         # Apply signals to communication system
         if hasattr(env, 'communication_system') and env.communication_system is not None:
@@ -1043,8 +1053,9 @@ def create_overmind_adapter(overmind: Overmind):
 
             # Apply to physarum network
             if hasattr(env, 'physarum_network') and env.physarum_network is not None:
-                # tau and flow_exp would be used during physarum.update()
-                pass
+                # Apply tau (decay rate) and flow_exp to physarum config
+                env.physarum_network.config.decay_rate = signals["physarum_tau"]
+                env.physarum_network.config.flow_exponent = signals["physarum_flow_exp"]
 
             # Apply to communication system
             if hasattr(env, 'communication_system') and env.communication_system is not None:

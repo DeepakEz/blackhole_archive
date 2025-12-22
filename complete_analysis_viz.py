@@ -115,7 +115,8 @@ try:
     exp_params, _ = curve_fit(exp_decay, times, energies, p0=[initial_energy, 0.001])
     exp_pred = exp_decay(times, *exp_params)
     exp_r2 = 1 - np.sum((energies - exp_pred)**2) / np.sum((energies - np.mean(energies))**2)
-except:
+except (RuntimeError, ValueError, TypeError) as e:
+    # Curve fit failed (convergence issues or invalid data)
     exp_params = [initial_energy, 0.001]
     exp_r2 = 0
 
@@ -127,7 +128,8 @@ try:
     power_params, _ = curve_fit(power_law, times, energies, p0=[initial_energy, -0.5, 0])
     power_pred = power_law(times, *power_params)
     power_r2 = 1 - np.sum((energies - power_pred)**2) / np.sum((energies - np.mean(energies))**2)
-except:
+except (RuntimeError, ValueError, TypeError) as e:
+    # Curve fit failed (convergence issues or invalid data)
     power_params = [initial_energy, -0.5, 0]
     power_r2 = 0
 
