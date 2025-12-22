@@ -72,7 +72,8 @@ class ExperimentAnalyzer:
         # Try to set matplotlib style
         try:
             plt.style.use(self.config.style)
-        except:
+        except (ValueError, OSError) as e:
+            # Style not found or file error - continue with default style
             pass
 
         plt.rcParams.update({
