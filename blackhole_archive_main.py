@@ -650,7 +650,6 @@ class ProductionSimulationEngine(SimulationEngine):
         entropy_signature = EntropySignature(
             total_entropy=float(len(payload_bytes)),
             local_curvature=float(self.spacetime.get_curvature(bee.position)),
-            local_curvature=float(self.spacetime.get_ricci_scalar(bee.position)),
             temperature=0.0,
             checksum=hashlib.sha256(payload_bytes).hexdigest(),
         )
