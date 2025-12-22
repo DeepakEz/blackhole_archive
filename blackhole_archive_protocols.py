@@ -546,19 +546,22 @@ class WormholeTransportProtocol:
     - Bandwidth management
     """
     
-    def __init__(self, 
+    def __init__(self,
                  throat_area: float,
                  holographic_constant: float = 1.0):
         # Channel capacity from holographic bound
         # I_max = (c³ A) / (4ħG) in geometric units
         self.max_capacity = holographic_constant * throat_area
-        
+
+        # Max packets in flight (for holographic utilization calculation)
+        self.max_packets_in_flight = max(1, int(self.max_capacity / 100))  # Assume ~100 bytes/packet
+
         self.channel_state = ChannelState(capacity=self.max_capacity, current_load=0.0)
-        
+
         # Congestion control
         self.congestion_window = 1.0  # AIMD parameter
         self.slow_start_threshold = 10.0
-        
+
         # Timing
         self.rtt_estimate = 1.0  # Round-trip time estimate
         self.rtt_variance = 0.1
@@ -678,6 +681,32 @@ class WormholeTransportProtocol:
     def get_timeout(self) -> float:
         """Compute retransmission timeout"""
         return self.rtt_estimate + 4 * self.rtt_variance
+
+    def get_queue_size(self) -> int:
+        """Get current number of packets in queue"""
+        return len(self.channel_state.packet_queue)
+
+    def get_in_transit_count(self) -> int:
+        """Get number of packets currently in transit"""
+        return len(self.channel_state.in_transit)
+
+    def get_utilization(self) -> float:
+        """Get current channel utilization (0-1)"""
+        return self.channel_state.current_load / max(1, self.max_capacity)
+
+    def get_stats(self) -> dict:
+        """Get protocol statistics"""
+        return {
+            'queue_size': self.get_queue_size(),
+            'in_transit': self.get_in_transit_count(),
+            'total_sent': self.channel_state.total_packets_sent,
+            'total_received': self.channel_state.total_packets_received,
+            'bytes_sent': self.channel_state.total_bytes_sent,
+            'bytes_received': self.channel_state.total_bytes_received,
+            'loss_rate': self.channel_state.packet_loss_rate,
+            'utilization': self.get_utilization(),
+            'congestion_window': self.congestion_window,
+        }
 
 # =============================================================================
 # 4. SYNCHRONIZATION LAYER (Clock Coordination)
