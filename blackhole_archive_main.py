@@ -308,9 +308,10 @@ class BeaverAgent(Agent):
         # Drift toward the highest curvature region we sampled
         self.velocity = 0.8 * self.velocity + 0.2 * target_dir
 
-        if target_curv > 0.1 and self.energy > 0.05:
+        # FIX #1: Lower threshold (was 0.1, now 0.01) to trigger building at moderate r
+        if target_curv > 0.01 and self.energy > 0.05:
             spacetime.add_structural_field(self.position, 1.0, 2.0)
-            self.energy -= 0.05
+            self.energy -= 0.02  # Reduced cost for sustainability
 
         # Move and expend energy
         self.position += dt * self.velocity + 0.05 * np.random.randn(4)

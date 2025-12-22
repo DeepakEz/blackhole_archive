@@ -162,7 +162,7 @@ class EnhancedSpacetime:
         i = np.argmin(np.abs(self.r - position[1]))
         j = np.argmin(np.abs(self.theta - position[2]))
         k = np.argmin(np.abs(self.phi - position[3]))
-        
+
         # Add Gaussian
         for di in range(-5, 6):
             for dj in range(-3, 4):
@@ -170,10 +170,51 @@ class EnhancedSpacetime:
                     ii = (i + di) % self.config.n_r
                     jj = max(0, min(self.config.n_theta-1, j + dj))
                     kk = (k + dk) % self.config.n_phi
-                    
+
                     distance = np.sqrt(di**2 + dj**2 + dk**2)
                     if distance < radius:
                         self.structural_field[ii, jj, kk] += strength * np.exp(-distance**2 / (2 * radius**2))
+
+    # FIX #2: Structural field coupling methods
+    def get_structural_field_at(self, position: np.ndarray) -> float:
+        """Get structural field value at position - FIX #2"""
+        i = np.argmin(np.abs(self.r - position[1]))
+        j = np.argmin(np.abs(self.theta - position[2]))
+        k = np.argmin(np.abs(self.phi - position[3]))
+        return self.structural_field[i, j, k]
+
+    def get_movement_cost(self, position: np.ndarray) -> float:
+        """
+        Get movement cost at position - FIX #2
+        Structural field REDUCES movement cost (easier to traverse)
+        """
+        base_cost = 1.0
+        structural = self.get_structural_field_at(position)
+        # Structural field reduces cost: more structure = easier movement
+        # Formula: cost = base / (1 + structural)
+        return base_cost / (1.0 + structural)
+
+    def get_effective_time_dilation(self, position: np.ndarray) -> float:
+        """
+        Get time dilation modified by structural field - FIX #2
+        Structural field provides "exotic matter" effect that reduces dilation
+        """
+        r = position[1]
+        base_dilation = 1 / np.sqrt(max(1e-10, 1 - self.r_s / r))
+        structural = self.get_structural_field_at(position)
+        # Structural field reduces time dilation (stabilizes region)
+        # Formula: effective = base / (1 + 0.1 * structural)
+        return base_dilation / (1.0 + 0.1 * structural)
+
+    def get_exploration_bias(self, position: np.ndarray) -> float:
+        """
+        Get exploration bias from structural field - FIX #2
+        High structural field = already explored, look elsewhere
+        Returns value in [0, 1] where 0 = explore elsewhere, 1 = explore here
+        """
+        structural = self.get_structural_field_at(position)
+        # Inverse relationship: high structure = low exploration priority
+        return 1.0 / (1.0 + structural)
 
 # =============================================================================
 # ENHANCED AGENTS
@@ -205,9 +246,11 @@ class EnhancedBeaverAgent(Agent):
         
         # Check curvature
         curvature = spacetime.get_ricci_scalar(self.position)
-        
-        # FIXED: Lower threshold, check cooldown
-        if curvature > 0.1 and self.energy > 0.05 and self.construction_cooldown <= 0:
+
+        # FIX #1: Lower threshold by 1 order of magnitude (was 0.1, now 0.01)
+        # At M=1: threshold 0.01 triggers at r < ~5.4 (vs r < ~3.4 at 0.1)
+        # This allows beavers at moderate distances to build
+        if curvature > 0.01 and self.energy > 0.05 and self.construction_cooldown <= 0:
             # Build structure
             spacetime.add_structural_field(self.position, 2.0, 3.0)
             self.structures_built += 1
@@ -242,12 +285,15 @@ class EnhancedBeaverAgent(Agent):
         
         # Update position
         self.position += dt * self.velocity
-        
-        # Energy decay (slower than before)
-        self.energy -= dt * 0.005
-        
+
+        # FIX #2: Energy decay modified by structural field
+        # Moving through structured regions costs less energy
+        movement_cost = spacetime.get_movement_cost(self.position)
+        self.energy -= dt * 0.005 * movement_cost
+
         if self.energy <= 0:
             self.state = "dead"
+
 
 class EnhancedAntAgent(Agent):
     """Enhanced ant with semantic graph building"""
@@ -301,13 +347,23 @@ class EnhancedAntAgent(Agent):
         
         # Random walk if not at vertex
         if self.current_vertex is None:
-            self.position += dt * self.velocity + 0.03 * np.random.randn(4)
-        
-        # Energy decay
-        self.energy -= dt * 0.003
-        
+            # FIX #2: Use exploration bias from structural field
+            # Prefer exploring areas with less structural field (less explored)
+            exploration_bias = spacetime.get_exploration_bias(self.position)
+            # Higher bias = more exploration here; lower = move away
+            random_step = 0.03 * np.random.randn(4)
+            # Scale random step inversely with exploration bias
+            # Low bias (already explored) = larger steps away
+            random_step *= (2.0 - exploration_bias)
+            self.position += dt * self.velocity + random_step
+
+        # FIX #2: Energy decay modified by structural field
+        movement_cost = spacetime.get_movement_cost(self.position)
+        self.energy -= dt * 0.003 * movement_cost
+
         if self.energy <= 0:
             self.state = "dead"
+
 
 class EnhancedBeeAgent(Agent):
     """Enhanced bee with packet transport"""
@@ -375,10 +431,12 @@ class EnhancedBeeAgent(Agent):
         
         # Update position
         self.position += dt * self.velocity
-        
-        # Energy decay
-        self.energy -= dt * 0.008 * (1 + 0.5 * bool(self.packet))
-        
+
+        # FIX #2: Energy decay modified by structural field
+        # Structural field reduces movement cost for bees too
+        movement_cost = spacetime.get_movement_cost(self.position)
+        self.energy -= dt * 0.008 * movement_cost * (1 + 0.5 * bool(self.packet))
+
         if self.energy <= 0:
             self.state = "dead"
 
@@ -442,7 +500,10 @@ class EnhancedSimulationEngine:
         
         self.logger.info("Initializing semantic graph...")
         self.semantic_graph = SemanticGraph()
-        
+
+        # FIX #3: Seed semantic graph with initial vertices so bees have targets
+        self._seed_semantic_graph(n_initial_vertices=15)
+
         self.logger.info("Initializing agents...")
         self.agents = self._initialize_agents()
         
@@ -533,7 +594,41 @@ class EnhancedSimulationEngine:
             ))
         
         return agents
-    
+
+    def _seed_semantic_graph(self, n_initial_vertices: int = 10):
+        """
+        FIX #3: Seed semantic graph with initial high-salience vertices.
+
+        Without initial vertices, bees have nothing to transport and the
+        epistemic layer remains inert. Seed with vertices at positions where
+        curvature is high (near event horizon) since these are informationally
+        interesting locations.
+        """
+        self.logger.info(f"Seeding semantic graph with {n_initial_vertices} initial vertices")
+
+        for i in range(n_initial_vertices):
+            # Create vertices near event horizon where curvature is high
+            r = self.config.r_s + 0.5 + np.random.rand() * 5  # r in [rs+0.5, rs+5.5]
+            theta = np.random.rand() * np.pi
+            phi = np.random.rand() * 2 * np.pi
+
+            position = np.array([0.0, r, theta, phi])
+
+            # Compute salience based on curvature - closer to horizon = higher salience
+            curvature = self.spacetime.get_curvature(position)
+            salience = min(1.0, curvature * 10)  # Scale to [0, 1]
+
+            # Add vertex to semantic graph
+            vertex_id = self.semantic_graph.add_vertex(position, salience)
+
+            # Connect to nearby vertices with initial pheromone
+            if i > 0:
+                for prev_id in range(max(0, vertex_id - 3), vertex_id):
+                    self.semantic_graph.add_edge(prev_id, vertex_id, pheromone=0.5)
+                    self.semantic_graph.add_edge(vertex_id, prev_id, pheromone=0.5)
+
+        self.logger.info(f"Semantic graph seeded with {self.semantic_graph.graph.number_of_nodes()} vertices")
+
     def run(self):
         """Run enhanced simulation"""
         n_steps = int(self.config.t_max / self.config.dt)
