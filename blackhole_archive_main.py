@@ -51,6 +51,7 @@ from tqdm import tqdm
 import asyncio
 from concurrent.futures import ProcessPoolExecutor
 import uuid
+from datetime import datetime
 
 from blackhole_archive_enhanced import (
     EnhancedSpacetime,
@@ -58,6 +59,7 @@ from blackhole_archive_enhanced import (
     EnhancedAntAgent,
     EnhancedBeeAgent,
     SemanticGraph,
+    EnhancedSimulationEngine,  # Add the enhanced engine
 )
 from blackhole_archive_protocols import (
     WormholeTransportProtocol,
@@ -67,6 +69,7 @@ from blackhole_archive_protocols import (
     EntropySignature,
     CausalCertificate,
 )
+from energy_model import ENERGY, InstrumentationCounters
 
 # =============================================================================
 # CONFIGURATION
@@ -813,29 +816,52 @@ class Visualizer:
 # =============================================================================
 
 def main():
-    """Main entry point"""
-    parser = argparse.ArgumentParser(description="Blackhole Archive Simulation")
+    """
+    Unified CLI entry point for Blackhole Archive simulation.
+
+    Supports multiple engines:
+    - basic: Simple simulation engine (SimulationEngine)
+    - enhanced: Full features with 7 fixes (EnhancedSimulationEngine)
+    - production: Epistemic + protocol integration (ProductionSimulationEngine)
+    """
+    parser = argparse.ArgumentParser(
+        description="Blackhole Archive Simulation - Unified CLI",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python blackhole_archive_main.py --mode demo --engine enhanced
+  python blackhole_archive_main.py --mode full --engine production
+  python blackhole_archive_main.py --mode test --engine basic
+        """
+    )
     parser.add_argument('--mode', type=str, default='demo',
                        choices=['demo', 'full', 'test'],
-                       help='Simulation mode')
-    parser.add_argument('--output', type=str, default='./blackhole_archive_output',
-                       help='Output directory')
+                       help='Simulation mode (demo=10s, full=100s, test=1s)')
+    parser.add_argument('--output', type=str, default=None,
+                       help='Output directory (default: results/<timestamp>_<engine>)')
     parser.add_argument('--config', type=str, default=None,
                        help='Path to config JSON file')
-    parser.add_argument('--engine', type=str, default='production',
-                        choices=['simplified', 'production'],
-                        help='Select simulation engine implementation')
-    
+    parser.add_argument('--engine', type=str, default='enhanced',
+                        choices=['basic', 'enhanced', 'production'],
+                        help='Select simulation engine (default: enhanced)')
+
     args = parser.parse_args()
-    
+
+    # Create timestamped output directory
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if args.output:
+        output_dir = args.output
+    else:
+        output_dir = f"./results/{timestamp}_{args.engine}"
+
     # Load or create config
     if args.config:
         with open(args.config, 'r') as f:
             config_dict = json.load(f)
             config = SimulationConfig(**config_dict)
     else:
-        config = SimulationConfig(output_dir=args.output)
-        
+        config = SimulationConfig(output_dir=output_dir)
+
         # Adjust for mode
         if args.mode == 'demo':
             config.t_max = 10.0
@@ -845,6 +871,14 @@ def main():
             config.n_r = 32
             config.n_theta = 16
             config.n_phi = 16
+        elif args.mode == 'full':
+            config.t_max = 100.0
+            config.n_beavers = 30
+            config.n_ants = 80
+            config.n_bees = 50
+            config.n_r = 64
+            config.n_theta = 32
+            config.n_phi = 32
         elif args.mode == 'test':
             config.t_max = 1.0
             config.n_beavers = 5
@@ -853,21 +887,50 @@ def main():
             config.n_r = 16
             config.n_theta = 8
             config.n_phi = 8
-    
-    # Create and run simulation
-    engine_cls = ProductionSimulationEngine if args.engine == 'production' else SimulationEngine
-    engine = engine_cls(config)
+
+    # Ensure output directory exists
+    Path(config.output_dir).mkdir(parents=True, exist_ok=True)
+
+    print("="*70)
+    print(f"BLACKHOLE ARCHIVE - {args.engine.upper()} ENGINE")
+    print("="*70)
+    print(f"Mode: {args.mode}")
+    print(f"Output: {config.output_dir}")
+    print(f"Duration: {config.t_max} time units")
+    print(f"Agents: {config.n_beavers} beavers, {config.n_ants} ants, {config.n_bees} bees")
+    print("="*70)
+
+    # Select and run engine
+    if args.engine == 'basic':
+        engine = SimulationEngine(config)
+    elif args.engine == 'enhanced':
+        engine = EnhancedSimulationEngine(config)
+    elif args.engine == 'production':
+        try:
+            from blackhole_archive_production import ProductionSimulationEngine
+            engine = ProductionSimulationEngine(config)
+        except ImportError as e:
+            print(f"Warning: Could not import ProductionSimulationEngine: {e}")
+            print("Falling back to EnhancedSimulationEngine")
+            engine = EnhancedSimulationEngine(config)
+
     engine.run()
-    
+
     # Visualize
     if config.visualization_enabled:
         visualizer = Visualizer(config)
         visualizer.plot_spacetime_slice(engine.spacetime)
         visualizer.plot_agent_distribution(engine.agents)
         print(f"Visualizations saved to {visualizer.output_dir}")
-    
-    print(f"\nSimulation complete! Results in {config.output_dir}")
-    print(f"Final energy: {engine.stats['total_energy']:.2f}")
+
+    print("\n" + "="*70)
+    print("SIMULATION COMPLETE")
+    print("="*70)
+    print(f"Results saved to: {config.output_dir}")
+    print(f"Final energy: {engine.stats.get('total_energy', 0):.2f}")
+    print(f"Structures built: {engine.stats.get('n_structures_built', 0)}")
+    print(f"Packets transported: {engine.stats.get('n_packets_transported', 0)}")
+    print("="*70)
 
 if __name__ == "__main__":
     main()
