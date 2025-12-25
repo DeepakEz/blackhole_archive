@@ -812,6 +812,158 @@ class Visualizer:
         plt.close()
 
 # =============================================================================
+# DISPLAY LATEST RESULTS
+# =============================================================================
+
+def find_latest_results_dir() -> Optional[Path]:
+    """Find the most recent results directory with valid simulation data."""
+    results_root = Path("results")
+    if not results_root.exists():
+        return None
+
+    subdirs = sorted(
+        [d for d in results_root.iterdir() if d.is_dir()],
+        key=lambda x: x.stat().st_mtime,
+        reverse=True
+    )
+
+    for subdir in subdirs:
+        if (subdir / "simulation_report.json").exists():
+            return subdir
+        if (subdir / "enhanced_simulation_report.json").exists():
+            return subdir
+
+    return None
+
+
+def display_latest_results(open_files: bool = True) -> bool:
+    """
+    Display the latest simulation results.
+
+    1. Finds the most recent results directory
+    2. Generates visualizations if they don't exist
+    3. Displays a summary and optionally opens the visualization files
+
+    Returns True if results were found and displayed, False otherwise.
+    """
+    import subprocess
+    import platform
+
+    results_dir = find_latest_results_dir()
+    if results_dir is None:
+        print("No results found.")
+        print("\nRun a simulation first:")
+        print("  python blackhole_archive_main.py --mode demo --engine enhanced")
+        return False
+
+    print("="*70)
+    print("BLACKHOLE ARCHIVE - LATEST RESULTS")
+    print("="*70)
+    print(f"\nResults directory: {results_dir}")
+
+    # Load and display summary from report
+    report_file = None
+    for name in ["enhanced_simulation_report.json", "simulation_report.json"]:
+        if (results_dir / name).exists():
+            report_file = results_dir / name
+            break
+
+    if report_file:
+        with open(report_file, 'r') as f:
+            report = json.load(f)
+
+        config = report.get('config', {})
+        stats = report.get('final_statistics', {})
+
+        print(f"\nSimulation Summary:")
+        print(f"  Duration: {config.get('t_max', 'N/A')} time units")
+        print(f"  Engine: {report_file.stem.replace('_simulation_report', '')}")
+        print(f"  Agents: {config.get('n_beavers', 0)} beavers, {config.get('n_ants', 0)} ants, {config.get('n_bees', 0)} bees")
+
+        print(f"\nFinal Statistics:")
+        print(f"  Total Energy: {stats.get('total_energy', 'N/A'):.2f}" if isinstance(stats.get('total_energy'), (int, float)) else f"  Total Energy: {stats.get('total_energy', 'N/A')}")
+        print(f"  Structures Built: {stats.get('n_structures_built', 'N/A')}")
+        print(f"  Semantic Vertices: {stats.get('n_vertices', 'N/A')}")
+        print(f"  Packets Transported: {stats.get('n_packets_transported', 'N/A')}")
+
+    # Check for visualizations
+    viz_dir = results_dir / "advanced_visualizations"
+    viz_files = [
+        "system_dynamics.png",
+        "colony_analysis.png",
+        "growth_dynamics.png",
+        "correlation_analysis.png"
+    ]
+
+    existing_viz = [viz_dir / f for f in viz_files if (viz_dir / f).exists()]
+
+    if not existing_viz:
+        print(f"\nVisualizations not found. Generating...")
+        try:
+            result = subprocess.run(
+                ["python", "complete_analysis_viz.py", "--results", str(results_dir)],
+                capture_output=True,
+                text=True,
+                timeout=120
+            )
+            if result.returncode == 0:
+                print("  Visualizations generated successfully.")
+                existing_viz = [viz_dir / f for f in viz_files if (viz_dir / f).exists()]
+            else:
+                print(f"  Warning: Visualization generation failed")
+                if result.stderr:
+                    print(f"  Error: {result.stderr[:200]}")
+        except subprocess.TimeoutExpired:
+            print("  Warning: Visualization generation timed out")
+        except Exception as e:
+            print(f"  Warning: Could not generate visualizations: {e}")
+
+    if existing_viz:
+        print(f"\nVisualizations ({len(existing_viz)} files):")
+        for viz_file in existing_viz:
+            print(f"  - {viz_file.name}")
+
+        # Check for analysis report
+        report_txt = viz_dir / "analysis_report.txt"
+        if report_txt.exists():
+            print(f"  - analysis_report.txt")
+
+        print(f"\nVisualization directory: {viz_dir}")
+
+        if open_files:
+            print("\nOpening visualizations...")
+            system = platform.system()
+
+            for viz_file in existing_viz:
+                try:
+                    if system == "Darwin":  # macOS
+                        subprocess.run(["open", str(viz_file)], check=False)
+                    elif system == "Linux":
+                        # Try xdg-open first, fall back to other viewers
+                        try:
+                            subprocess.run(["xdg-open", str(viz_file)], check=False, timeout=5)
+                        except (subprocess.TimeoutExpired, FileNotFoundError):
+                            # Try common image viewers
+                            for viewer in ["eog", "feh", "display", "xv"]:
+                                try:
+                                    subprocess.run([viewer, str(viz_file)], check=False, timeout=5)
+                                    break
+                                except (subprocess.TimeoutExpired, FileNotFoundError):
+                                    continue
+                    elif system == "Windows":
+                        subprocess.run(["start", "", str(viz_file)], shell=True, check=False)
+                except Exception as e:
+                    print(f"  Could not open {viz_file.name}: {e}")
+
+            print("  Files opened (if a viewer is available)")
+    else:
+        print("\nNo visualizations available.")
+
+    print("\n" + "="*70)
+    return True
+
+
+# =============================================================================
 # MAIN ENTRY POINT
 # =============================================================================
 
@@ -832,6 +984,8 @@ Examples:
   python blackhole_archive_main.py --mode demo --engine enhanced
   python blackhole_archive_main.py --mode full --engine production
   python blackhole_archive_main.py --mode test --engine basic
+  python blackhole_archive_main.py --show-latest          # View latest results
+  python blackhole_archive_main.py --show-latest --no-open  # Print info only
         """
     )
     parser.add_argument('--mode', type=str, default='demo',
@@ -844,8 +998,18 @@ Examples:
     parser.add_argument('--engine', type=str, default='enhanced',
                         choices=['basic', 'enhanced', 'production'],
                         help='Select simulation engine (default: enhanced)')
+    parser.add_argument('--show-latest', action='store_true',
+                        help='Display the latest simulation results and exit')
+    parser.add_argument('--no-open', action='store_true',
+                        help='With --show-latest, print info without opening files')
 
     args = parser.parse_args()
+
+    # Handle --show-latest mode
+    if args.show_latest:
+        success = display_latest_results(open_files=not args.no_open)
+        import sys
+        sys.exit(0 if success else 1)
 
     # Create timestamped output directory
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

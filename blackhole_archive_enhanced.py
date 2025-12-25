@@ -445,9 +445,13 @@ class EnhancedAntAgent(Agent):
                 self.current_vertex = next_vertex
                 self.path_history.append(next_vertex)
 
-                # Update position
-                next_pos = semantic_graph.graph.nodes[next_vertex]['position']
-                self.position = next_pos
+                # Update position (with safety check)
+                node_data = semantic_graph.graph.nodes.get(next_vertex, {})
+                if 'position' in node_data:
+                    self.position = node_data['position']
+                else:
+                    # Vertex missing position data, reset to exploration mode
+                    self.current_vertex = None
             else:
                 # No neighbors, explore
                 self.current_vertex = None
@@ -843,7 +847,7 @@ class EnhancedSimulationEngine:
 
         for i in range(n_initial_vertices):
             # Create vertices near event horizon where curvature is high
-            r = self.config.r_s + 0.5 + np.random.rand() * 5  # r in [rs+0.5, rs+5.5]
+            r = self.spacetime.r_s + 0.5 + np.random.rand() * 5  # r in [rs+0.5, rs+5.5]
             theta = np.random.rand() * np.pi
             phi = np.random.rand() * 2 * np.pi
 
