@@ -227,6 +227,40 @@ class EnhancedSpacetime:
         # Inverse relationship: high structure = low exploration priority
         return 1.0 / (1.0 + structural)
 
+    def get_structural_field(self, position: np.ndarray) -> float:
+        """Alias for get_structural_field_at for cleaner API."""
+        return self.get_structural_field_at(position)
+
+    def get_structural_gradient(self, position: np.ndarray) -> np.ndarray:
+        """
+        Get gradient of structural field at position.
+        Returns 3D gradient vector (dr, dtheta, dphi) pointing toward higher structure.
+        """
+        i = np.argmin(np.abs(self.r - position[1]))
+        j = np.argmin(np.abs(self.theta - position[2]))
+        k = np.argmin(np.abs(self.phi - position[3]))
+
+        # Compute numerical gradient using central differences
+        gradient = np.zeros(3)
+
+        # dr gradient
+        if 0 < i < self.config.n_r - 1:
+            dr = self.r[1] - self.r[0] if len(self.r) > 1 else 1.0
+            gradient[0] = (self.structural_field[i+1, j, k] - self.structural_field[i-1, j, k]) / (2 * dr)
+
+        # dtheta gradient
+        if 0 < j < self.config.n_theta - 1:
+            dtheta = self.theta[1] - self.theta[0] if len(self.theta) > 1 else 1.0
+            gradient[1] = (self.structural_field[i, j+1, k] - self.structural_field[i, j-1, k]) / (2 * dtheta)
+
+        # dphi gradient (periodic)
+        dphi = self.phi[1] - self.phi[0] if len(self.phi) > 1 else 1.0
+        k_next = (k + 1) % self.config.n_phi
+        k_prev = (k - 1) % self.config.n_phi
+        gradient[2] = (self.structural_field[i, j, k_next] - self.structural_field[i, j, k_prev]) / (2 * dphi)
+
+        return gradient
+
     def decay_structural_field(self, dt: float, decay_rate: float = 0.01):
         """
         FIX #5: Structural field decays over time (maintenance cost).
@@ -524,17 +558,42 @@ class EnhancedAntAgent(Agent):
                 # No neighbors, explore
                 self.current_vertex = None
 
-        # Random walk if not at vertex
+        # Random walk if not at vertex - with intelligent exploration
         if self.current_vertex is None:
-            # FIX #2: Use exploration bias from structural field
-            # Prefer exploring areas with less structural field (less explored)
-            exploration_bias = spacetime.get_exploration_bias(self.position)
-            # Higher bias = more exploration here; lower = move away
+            # LAYER INTEGRATION: Ants are attracted to structural field (beaver builds)
+            structural_value = spacetime.get_structural_field(self.position)
+            structural_gradient = spacetime.get_structural_gradient(self.position)
+
+            # Compute exploration direction
             random_step = 0.03 * np.random.randn(4)
-            # Scale random step inversely with exploration bias
-            # Low bias (already explored) = larger steps away
+
+            # Attraction to structures (where beavers have built)
+            if structural_value > 0.1:
+                # Follow gradient toward denser structure
+                gradient_strength = min(0.5, structural_value)
+                random_step[1:] += gradient_strength * structural_gradient * 0.1
+
+            # Exploration bias - avoid over-explored areas
+            exploration_bias = spacetime.get_exploration_bias(self.position)
             random_step *= (2.0 - exploration_bias)
+
             self.position += dt * self.velocity + random_step
+
+            # LAYER INTEGRATION: Create structure-linked vertex at high structural field
+            if structural_value > 0.3 and np.random.random() < 0.1:
+                # This location has significant beaver activity, mark it semantically
+                nearby = self._find_nearby_vertex(semantic_graph, distance_threshold=3.0)
+                if nearby is None:
+                    # Create a "structure vertex" linking beaver and ant layers
+                    vertex_id = semantic_graph.add_vertex(
+                        position=self.position.copy(),
+                        salience=0.3 + structural_value * 0.5  # Salience from structure
+                    )
+                    semantic_graph.graph.nodes[vertex_id]['last_accessed'] = current_time
+                    semantic_graph.graph.nodes[vertex_id]['vertex_type'] = 'structure'
+                    self.current_vertex = vertex_id
+                    self.path_history.append(vertex_id)
+                    self.discovery_times[vertex_id] = current_time
 
         # FIX #2: Energy decay modified by structural field
         movement_cost = spacetime.get_movement_cost(self.position)
@@ -710,17 +769,45 @@ class SemanticGraph:
             if self.pheromones[edge] < 0.01:
                 del self.pheromones[edge]
 
-    def prune_graph(self, current_time: float, max_age: float = 100.0):
+    def prune_graph(self, current_time: float, max_age: float = 50.0, min_vertices: int = 10):
         """
         FIX #6: Prune vertices that haven't been accessed recently.
         Cost of memory - old, unused beliefs are forgotten.
+
+        Protected vertices (never pruned):
+        - Vertices with packets in queue
+        - Vertices with high connectivity (degree > 3)
+        - Vertices with high salience (> 0.7)
+        - If graph would drop below min_vertices
         """
+        if self.graph.number_of_nodes() <= min_vertices:
+            return 0  # Don't prune if already at minimum
+
         vertices_to_remove = []
         for v in self.graph.nodes():
+            # Check age
             last_accessed = self.graph.nodes[v].get('last_accessed', 0.0)
             age = current_time - last_accessed
-            if age > max_age and self.get_queue_length(v) == 0:
-                vertices_to_remove.append(v)
+            if age <= max_age:
+                continue  # Recently accessed, keep
+
+            # Check protections
+            if self.get_queue_length(v) > 0:
+                continue  # Has packets, keep
+
+            degree = self.graph.in_degree(v) + self.graph.out_degree(v)
+            if degree > 3:
+                continue  # Well-connected hub, keep
+
+            salience = self.graph.nodes[v].get('salience', 0.5)
+            if salience > 0.7:
+                continue  # High importance, keep
+
+            vertices_to_remove.append(v)
+
+        # Limit pruning to maintain minimum graph size
+        max_to_remove = max(0, self.graph.number_of_nodes() - min_vertices)
+        vertices_to_remove = vertices_to_remove[:max_to_remove]
 
         for v in vertices_to_remove:
             self.graph.remove_node(v)
@@ -729,10 +816,12 @@ class SemanticGraph:
 
         return len(vertices_to_remove)
 
-    def merge_nearby_vertices(self, distance_threshold: float = 1.0):
+    def merge_nearby_vertices(self, distance_threshold: float = 2.0):
         """
         FIX #6: Merge vertices that are spatially close.
         Prevents unbounded growth from redundant beliefs.
+
+        Note: Uses SPATIAL distance only (r, theta, phi), not time component.
         """
         merged_count = 0
         vertices = list(self.graph.nodes())
@@ -751,13 +840,13 @@ class SemanticGraph:
                     continue
                 pos2 = self.graph.nodes[v2]['position']
 
-                # Check spatial distance
+                # Check SPATIAL distance only (exclude time component at index 0)
                 try:
-                    dist = np.linalg.norm(pos1 - pos2)
+                    spatial_dist = np.linalg.norm(pos1[1:] - pos2[1:])
                 except (TypeError, ValueError):
                     continue
 
-                if dist < distance_threshold:
+                if spatial_dist < distance_threshold:
                     # Merge v2 into v1 (keep higher salience)
                     sal1 = self.graph.nodes[v1].get('salience', 0.5)
                     sal2 = self.graph.nodes[v2].get('salience', 0.5)

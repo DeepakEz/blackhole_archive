@@ -743,6 +743,109 @@ plt.close()
 print(f"  ✅ Saved: correlation_analysis.png")
 
 # ============================================================================
+# VISUALIZATION 5: LAYER INTEGRATION ANALYSIS
+# ============================================================================
+
+print(f"\n🎨 Generating Visualization 5: Layer Integration...")
+
+fig5, axes5 = plt.subplots(2, 2, figsize=(16, 14))
+
+# Panel 1: Phase Portrait - Energy vs Work with time evolution
+ax5_1 = axes5[0, 0]
+work = df['structures'] + df['packets']
+scatter = ax5_1.scatter(work, df['energy'], c=df['time'], cmap='viridis',
+                        s=50, alpha=0.8, edgecolors='black', linewidth=0.5)
+plt.colorbar(scatter, ax=ax5_1, label='Time')
+
+# Add arrows showing trajectory direction
+for i in range(0, len(df)-1, max(1, len(df)//15)):
+    dx = work.iloc[i+1] - work.iloc[i]
+    dy = df['energy'].iloc[i+1] - df['energy'].iloc[i]
+    ax5_1.annotate('', xy=(work.iloc[i+1], df['energy'].iloc[i+1]),
+                   xytext=(work.iloc[i], df['energy'].iloc[i]),
+                   arrowprops=dict(arrowstyle='->', color='red', alpha=0.5, lw=1.5))
+
+ax5_1.set_xlabel('Total Work (Structures + Packets)', fontsize=12, fontweight='bold')
+ax5_1.set_ylabel('System Energy', fontsize=12, fontweight='bold')
+ax5_1.set_title('Phase Portrait: Energy-Work Trajectory', fontsize=14, fontweight='bold')
+ax5_1.grid(True, alpha=0.3)
+
+# Panel 2: Layer Coupling - Structures vs Vertices vs Packets (3D-like)
+ax5_2 = axes5[0, 1]
+# Normalize for visualization
+struct_norm = df['structures'] / max(df['structures'].max(), 1)
+vert_norm = df['vertices'] / max(df['vertices'].max(), 1)
+pkt_norm = df['packets'] / max(df['packets'].max(), 1)
+
+ax5_2.fill_between(df['time'], 0, struct_norm, alpha=0.3, color=COLORS['structures'], label='Structures')
+ax5_2.fill_between(df['time'], 0, vert_norm, alpha=0.3, color=COLORS['vertices'], label='Vertices')
+ax5_2.fill_between(df['time'], 0, pkt_norm, alpha=0.3, color=COLORS['packets'], label='Packets')
+ax5_2.plot(df['time'], struct_norm, color=COLORS['structures'], linewidth=2)
+ax5_2.plot(df['time'], vert_norm, color=COLORS['vertices'], linewidth=2)
+ax5_2.plot(df['time'], pkt_norm, color=COLORS['packets'], linewidth=2)
+
+ax5_2.set_xlabel('Time', fontsize=12, fontweight='bold')
+ax5_2.set_ylabel('Normalized Value', fontsize=12, fontweight='bold')
+ax5_2.set_title('Layer Coupling Over Time (Normalized)', fontsize=14, fontweight='bold')
+ax5_2.legend(loc='upper left')
+ax5_2.grid(True, alpha=0.3)
+
+# Panel 3: Information Flow Rate
+ax5_3 = axes5[1, 0]
+# Compute rates
+structure_rate = np.gradient(df['structures'].values, df['time'].values)
+vertex_rate = np.gradient(df['vertices'].values, df['time'].values)
+packet_rate = np.gradient(df['packets'].values, df['time'].values)
+
+ax5_3.plot(df['time'], structure_rate, color=COLORS['structures'], linewidth=2, label='Structure Rate', alpha=0.8)
+ax5_3.plot(df['time'], vertex_rate, color=COLORS['vertices'], linewidth=2, label='Vertex Rate', alpha=0.8)
+ax5_3.plot(df['time'], packet_rate, color=COLORS['packets'], linewidth=2, label='Packet Rate', alpha=0.8)
+
+ax5_3.axhline(y=0, color='gray', linestyle='--', alpha=0.5)
+ax5_3.set_xlabel('Time', fontsize=12, fontweight='bold')
+ax5_3.set_ylabel('Rate of Change', fontsize=12, fontweight='bold')
+ax5_3.set_title('Layer Activity Rates', fontsize=14, fontweight='bold')
+ax5_3.legend()
+ax5_3.grid(True, alpha=0.3)
+
+# Panel 4: Cumulative Work Distribution with Efficiency Bands
+ax5_4 = axes5[1, 1]
+cumulative_structures = df['structures'].values
+cumulative_packets = df['packets'].values
+cumulative_work = cumulative_structures + cumulative_packets
+
+# Stacked area chart
+ax5_4.fill_between(df['time'], 0, cumulative_structures,
+                   color=COLORS['structures'], alpha=0.6, label='Structures')
+ax5_4.fill_between(df['time'], cumulative_structures, cumulative_work,
+                   color=COLORS['packets'], alpha=0.6, label='Packets')
+ax5_4.plot(df['time'], cumulative_work, 'k-', linewidth=2, label='Total Work')
+
+# Add efficiency annotation
+total_energy_used = df['energy'].iloc[0] - df['energy'].iloc[-1]
+final_work = cumulative_work[-1]
+if total_energy_used > 0:
+    efficiency_ratio = final_work / total_energy_used
+    ax5_4.annotate(f'Work/Energy = {efficiency_ratio:.2f}',
+                   xy=(df['time'].iloc[-1]*0.6, final_work*0.8),
+                   fontsize=12, fontweight='bold',
+                   bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+ax5_4.set_xlabel('Time', fontsize=12, fontweight='bold')
+ax5_4.set_ylabel('Cumulative Work', fontsize=12, fontweight='bold')
+ax5_4.set_title('Work Decomposition & Energy Efficiency', fontsize=14, fontweight='bold')
+ax5_4.legend(loc='upper left')
+ax5_4.grid(True, alpha=0.3)
+
+plt.suptitle('BLACKHOLE ARCHIVE: Layer Integration Analysis',
+             fontsize=18, fontweight='bold', y=0.995)
+plt.tight_layout()
+plt.savefig(VIZ_DIR / 'layer_integration.png', dpi=300, bbox_inches='tight')
+plt.close()
+
+print(f"  ✅ Saved: layer_integration.png")
+
+# ============================================================================
 # SUMMARY REPORT
 # ============================================================================
 
@@ -840,6 +943,7 @@ VISUALIZATIONS GENERATED
 2. colony_analysis.png - Survival rates, productivity, energy distribution
 3. growth_dynamics.png - Instantaneous rates and efficiency metrics
 4. correlation_analysis.png - Cross-metric correlations and regressions
+5. layer_integration.png - Phase portrait, layer coupling, activity rates
 
 {'='*80}
 Report Generated: {pd.Timestamp.now()}
@@ -865,7 +969,8 @@ print(f"  1. system_dynamics.png - 6-panel system overview")
 print(f"  2. colony_analysis.png - Colony performance metrics")
 print(f"  3. growth_dynamics.png - Growth rates and efficiency")
 print(f"  4. correlation_analysis.png - Cross-metric relationships")
-print(f"  5. analysis_report.txt - Complete text summary")
+print(f"  5. layer_integration.png - Phase portrait & layer coupling")
+print(f"  6. analysis_report.txt - Complete text summary")
 
 print(f"\n🎯 Key Results:")
 print(f"  • Energy Decay: {total_decay:.1f} ({total_decay/initial_energy*100:.0f}%)")
