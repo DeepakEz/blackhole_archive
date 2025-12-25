@@ -40,6 +40,13 @@ from blackhole_archive_protocols import (
     EntropySignature,
     CausalCertificate
 )
+from epistemic_enhancements import (
+    PacketValueComputer,
+    BeliefCompressor,
+    EnhancedOvermind,
+    StructuralEpistemicCoupler,
+    TransportLearner
+)
 
 
 # =============================================================================
@@ -194,8 +201,16 @@ class ProductionSimulationEngine:
         prior_cov = 2.0 * np.eye(16)
         self.free_energy_computer = FreeEnergyComputer(prior_mean, prior_cov)
         
+        # Legacy overmind (for compatibility)
         self.overmind = Overmind(target_entropy=50.0 * config.n_ants)
-        
+
+        # ENHANCED: Tier 1 Critical Features
+        self.enhanced_overmind = EnhancedOvermind(target_entropy=50.0 * config.n_ants)
+        self.belief_compressor = BeliefCompressor(self.epistemic_graph, merge_threshold=0.5)
+        self.structural_coupler = StructuralEpistemicCoupler(self.epistemic_graph)
+        self.transport_learner = TransportLearner(learning_rate=0.1)
+        self.packet_value_computer = PacketValueComputer(self.free_energy_computer, self.epistemic_graph)
+
         # LAYER 3: TRANSPORT PROTOCOL
         self.logger.info("Initializing transport protocol...")
         throat_radius = 2.1  # Just outside event horizon
@@ -232,7 +247,15 @@ class ProductionSimulationEngine:
             'packets_dropped': [],
             'queue_size': [],
             'congestion_rate': [],
-            'holographic_utilization': []
+            'holographic_utilization': [],
+
+            # Tier 1 Enhancement Metrics
+            'beliefs_merged': [],
+            'beliefs_pruned': [],
+            'contradictions_resolved': [],
+            'overmind_actions': [],
+            'transport_success_rate': [],
+            'infrastructure_efficiency': []
         }
         
         self.logger.info("Production engine initialized")
@@ -354,16 +377,54 @@ class ProductionSimulationEngine:
             total_energy = sum(
                 a.energy for agents in self.agents.values() for a in agents if a.state == "active"
             )
-            
+
+            # Legacy overmind (for compatibility)
             self.overmind.observe_system(
                 energy=total_energy,
                 graph=self.epistemic_graph,
                 n_packets=sum(b.packets_delivered for b in self.agents['bees']),
                 dt=self.config.dt
             )
-            
-            if self.overmind.should_inject_noise():
-                self.logger.info(f"Step {step}: Overmind injecting epistemic noise")
+
+            # ENHANCED OVERMIND: Real control laws (Tier 1 Fix #3)
+            total_delivered = sum(b.packets_delivered for b in self.agents['bees'])
+            total_dropped = sum(b.packets_dropped for b in self.agents['bees'])
+
+            control_actions = self.enhanced_overmind.observe_and_control(
+                energy=total_energy,
+                epistemic_graph=self.epistemic_graph,
+                n_packets_delivered=total_delivered,
+                n_packets_dropped=total_dropped,
+                belief_compressor=self.belief_compressor,
+                dt=self.config.dt
+            )
+
+            # BELIEF COMPRESSION: Periodic MDL-based compression (Tier 1 Fix #2)
+            if step % 50 == 0 and len(self.epistemic_graph.beliefs) > 20:
+                compression_stats = self.belief_compressor.compress_step()
+                if compression_stats['merged'] > 0 or compression_stats['pruned'] > 0:
+                    self.logger.info(
+                        f"Step {step}: Belief compression - "
+                        f"merged={compression_stats['merged']}, "
+                        f"pruned={compression_stats['pruned']}, "
+                        f"resolved={compression_stats['resolved']}"
+                    )
+
+            # TRANSPORT LEARNING: Update learner with outcomes (Tier 1 Fix #5)
+            congestion = total_dropped / (total_delivered + total_dropped + 1) if (total_delivered + total_dropped) > 0 else 0
+            for bee in self.agents['bees']:
+                if bee.packets_delivered > 0:
+                    self.transport_learner.record_outcome(
+                        congestion_at_send=congestion,
+                        priority=0.5,
+                        action='send',
+                        success=True,
+                        wait_time=0.0
+                    )
+
+            # Legacy noise injection (only if enhanced overmind hasn't acted)
+            if 'inject_uncertainty' not in control_actions and self.overmind.should_inject_noise():
+                self.logger.info(f"Step {step}: Legacy overmind injecting epistemic noise")
                 for _ in range(5):
                     pos = np.random.randn(16)
                     self.epistemic_graph.add_belief(pos, salience=0.8, initial_uncertainty=2.0)
@@ -420,6 +481,18 @@ class ProductionSimulationEngine:
                 
                 self.stats['holographic_utilization'].append(
                     self.transport_protocol.get_queue_size() / self.transport_protocol.max_packets_in_flight
+                )
+
+                # Tier 1 Enhancement Statistics
+                self.stats['beliefs_merged'].append(self.belief_compressor.merges_performed)
+                self.stats['beliefs_pruned'].append(self.belief_compressor.pruned_beliefs)
+                self.stats['contradictions_resolved'].append(self.belief_compressor.contradictions_resolved)
+                self.stats['overmind_actions'].append(len(control_actions) if 'control_actions' in dir() else 0)
+                self.stats['transport_success_rate'].append(
+                    total_delivered / (total_delivered + total_dropped + 1)
+                )
+                self.stats['infrastructure_efficiency'].append(
+                    self.structural_coupler.compute_global_infrastructure_efficiency()
                 )
             
             # LOGGING - format compatible with complete_analysis_viz.py
@@ -484,6 +557,17 @@ class ProductionSimulationEngine:
                 'packets_dropped': self.stats['packets_dropped'][-1] if self.stats['packets_dropped'] else 0,
                 'final_congestion_rate': self.stats['congestion_rate'][-1] if self.stats['congestion_rate'] else 0,
                 'holographic_bound_respected': True
+            },
+            # Tier 1 Enhancement Statistics
+            'tier1_enhancements': {
+                'total_beliefs_merged': self.belief_compressor.merges_performed,
+                'total_beliefs_pruned': self.belief_compressor.pruned_beliefs,
+                'total_contradictions_resolved': self.belief_compressor.contradictions_resolved,
+                'final_transport_success_rate': self.stats['transport_success_rate'][-1] if self.stats['transport_success_rate'] else 0,
+                'final_infrastructure_efficiency': self.stats['infrastructure_efficiency'][-1] if self.stats['infrastructure_efficiency'] else 0,
+                'enhanced_overmind_active': True,
+                'belief_compression_active': True,
+                'transport_learning_active': True
             }
         }
 
