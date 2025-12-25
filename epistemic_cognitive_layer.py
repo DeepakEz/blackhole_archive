@@ -704,18 +704,8 @@ class EpistemicAntAgent:
                 )
                 self.current_belief_id = belief_id
 
-                # FIX: Generate packet for transport when creating salient belief
-                if salience > 0.3:  # Lower threshold for packet generation
-                    packet = {
-                        'content': f"belief_{belief_id}",
-                        'salience': salience,
-                        'confidence': 1.0 / uncertainty,
-                        'created_at': 0.0,  # Would use simulation time
-                        'ttl': 100.0,
-                        'source_agent': self.id,
-                        'source_vertex': belief_id
-                    }
-                    epistemic_graph.add_packet(belief_id, packet)
+                # FIX: Don't generate packet immediately on creation (prevents flash beliefs)
+                # Packets will be generated when belief persists and gets updated
 
             else:
                 # Check if belief still exists (may have been merged/pruned)
@@ -730,19 +720,7 @@ class EpistemicAntAgent:
                         initial_uncertainty=uncertainty
                     )
                     self.current_belief_id = belief_id
-
-                    # FIX: Generate packet for new belief after reset
-                    if salience > 0.3:
-                        packet = {
-                            'content': f"belief_{belief_id}",
-                            'salience': salience,
-                            'confidence': 1.0 / uncertainty,
-                            'created_at': 0.0,
-                            'ttl': 100.0,
-                            'source_agent': self.id,
-                            'source_vertex': belief_id
-                        }
-                        epistemic_graph.add_packet(belief_id, packet)
+                    # Don't generate packet for new belief - wait for persistence
                 else:
                     # Update existing belief
                     epistemic_graph.update_belief_from_observation(
@@ -757,6 +735,32 @@ class EpistemicAntAgent:
                             belief, observation
                         )
                         self.information_gain_history.append(ig)
+
+                        # FIX: Improved packet trigger = salience * novelty * persistence_bonus
+                        # Only generate packets for beliefs that have persisted and show novelty
+                        salience = belief.salience
+                        novelty = min(1.0, ig)  # Cap at 1.0
+                        # Persistence bonus: grows if belief survives multiple updates
+                        # 0 observations = 0, 1 = 0.33, 2 = 0.67, 3+ = 1.0
+                        persistence_bonus = min(1.0, len(belief.observations) / 3.0)
+
+                        packet_score = salience * novelty * persistence_bonus
+
+                        # Generate packet if score exceeds threshold
+                        if packet_score > 0.15:  # Threshold for packet generation
+                            packet = {
+                                'content': f"belief_{self.current_belief_id}_update_{len(belief.observations)}",
+                                'salience': salience,
+                                'confidence': belief.confidence,
+                                'created_at': 0.0,  # Would use simulation time
+                                'ttl': 100.0,
+                                'source_agent': self.id,
+                                'source_vertex': self.current_belief_id,
+                                'novelty': novelty,
+                                'persistence': persistence_bonus,
+                                'packet_score': packet_score
+                            }
+                            epistemic_graph.add_packet(self.current_belief_id, packet)
         
         # Move toward high uncertainty regions (active inference)
         # Sample nearby beliefs

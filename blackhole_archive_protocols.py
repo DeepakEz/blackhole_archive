@@ -574,12 +574,20 @@ class WormholeTransportProtocol:
         # FIX: Track current byte load separately from packet count
         self.current_byte_load = 0.0
 
+        # FIX: PPI tracking - enqueue attempts and acceptance
+        self.enqueue_attempts = 0
+        self.enqueue_accepted = 0
+        self.enqueue_rejected = 0
+
     def enqueue_packet(self, packet: Packet) -> bool:
         """
         Add packet to transmission queue
 
         Returns True if packet accepted, False if rejected
         """
+        # FIX: Track all enqueue attempts for PPI
+        self.enqueue_attempts += 1
+
         # FIX: Use byte-based load tracking consistently
         # Calculate total bytes in queue + in transit
         queued_bytes = sum(p.size_bytes for p in self.channel_state.packet_queue)
@@ -588,13 +596,27 @@ class WormholeTransportProtocol:
 
         projected_load = current_bytes + packet.size_bytes
         if projected_load > self.max_capacity_bytes * self.congestion_window:
+            self.enqueue_rejected += 1
             return False
 
         # Add to queue (sorted by priority)
         self.channel_state.packet_queue.append(packet)
         self.channel_state.packet_queue.sort(key=lambda p: p.priority, reverse=True)
 
+        self.enqueue_accepted += 1
         return True
+
+    def get_acceptance_rate(self) -> float:
+        """Get enqueue acceptance rate for PPI monitoring"""
+        if self.enqueue_attempts == 0:
+            return 1.0  # No attempts = no rejections
+        return self.enqueue_accepted / self.enqueue_attempts
+
+    def reset_counters(self):
+        """Reset PPI counters (call at logging intervals)"""
+        self.enqueue_attempts = 0
+        self.enqueue_accepted = 0
+        self.enqueue_rejected = 0
     
     def transmit_packets(self, dt: float) -> List[Packet]:
         """

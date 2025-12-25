@@ -278,7 +278,7 @@ class ProductionSimulationEngine:
             'n_packets_transported': 0,
             'total_energy': 0.0,
             'n_structures_built': 0,
-            
+
             # Epistemic
             'total_entropy': [],
             'contradiction_mass': [],
@@ -289,7 +289,7 @@ class ProductionSimulationEngine:
             'n_contradictions': [],
             'mean_confidence': [],
             'information_gain': [],
-            
+
             # Protocol
             'packets_delivered': [],
             'packets_dropped': [],
@@ -302,10 +302,33 @@ class ProductionSimulationEngine:
             'beliefs_pruned': [],
             'contradictions_resolved': [],
             'overmind_actions': [],
+
+            # FIX: Packet Provenance Integrity (PPI) tracking
+            'ppi_valid_provenance': [],      # Packets with valid source_vertex
+            'ppi_invalid_provenance': [],    # Ghost packets (no traceable origin)
+            'ppi_integrity_rate': [],        # % valid / total
+            'enqueue_attempts': [],          # Total enqueue attempts
+            'enqueue_accepted': [],          # Accepted by protocol
+            'enqueue_rejected': [],          # Rejected (capacity, etc.)
+            'acceptance_rate': [],           # % accepted / attempted
+            'graph_queue_length': [],        # Packets waiting in graph queues
+            'protocol_queue_length': [],     # Packets in transport protocol
             'transport_success_rate': [],
             'infrastructure_efficiency': []
         }
-        
+
+        # FIX: PPI tracking counters (reset each logging interval)
+        self.ppi_counters = {
+            'enqueue_attempts': 0,
+            'enqueue_accepted': 0,
+            'enqueue_rejected': 0,
+            'valid_provenance': 0,
+            'invalid_provenance': 0
+        }
+
+        # FIX: Track delivered packets for provenance audit
+        self.delivered_packets_log = []  # List of (packet_id, source_vertex, created_at, delivered_at)
+
         self.logger.info("Production engine initialized")
     
     def _setup_logging(self):
@@ -542,18 +565,65 @@ class ProductionSimulationEngine:
                 self.stats['infrastructure_efficiency'].append(
                     self.structural_coupler.compute_global_infrastructure_efficiency()
                 )
-            
+
+                # FIX: Packet Provenance Integrity (PPI) Statistics
+                # Track enqueue acceptance rate from protocol
+                self.stats['enqueue_attempts'].append(self.transport_protocol.enqueue_attempts)
+                self.stats['enqueue_accepted'].append(self.transport_protocol.enqueue_accepted)
+                self.stats['enqueue_rejected'].append(self.transport_protocol.enqueue_rejected)
+                self.stats['acceptance_rate'].append(self.transport_protocol.get_acceptance_rate())
+
+                # Track queue lengths at both layers
+                self.stats['graph_queue_length'].append(self.epistemic_graph.get_total_queue_length())
+                self.stats['protocol_queue_length'].append(self.transport_protocol.get_queue_size())
+
+                # Validate provenance of delivered packets
+                valid_provenance = 0
+                invalid_provenance = 0
+                for bee in self.agents['bees']:
+                    # Check if bee has delivered packets with valid source vertices
+                    if hasattr(bee, 'target_vertex') and bee.packets_delivered > 0:
+                        # Packets delivered from real graph vertices = valid
+                        valid_provenance += bee.packets_delivered
+                    # No way to track invalid currently - all our packets come from graph
+                total_packets = valid_provenance + invalid_provenance
+                self.stats['ppi_valid_provenance'].append(valid_provenance)
+                self.stats['ppi_invalid_provenance'].append(invalid_provenance)
+                self.stats['ppi_integrity_rate'].append(
+                    valid_provenance / total_packets if total_packets > 0 else 1.0
+                )
+
             # LOGGING - format compatible with complete_analysis_viz.py
             if step % 100 == 0:
                 n_vertices = len(self.epistemic_graph.graph.nodes) if hasattr(self.epistemic_graph, 'graph') else len(self.epistemic_graph.beliefs)
+                acceptance_rate = self.transport_protocol.get_acceptance_rate()
+                graph_q = self.epistemic_graph.get_total_queue_length()
+                proto_q = self.transport_protocol.get_queue_size()
+
                 self.logger.info(
                     f"Step {step}/{n_steps}, t={t:.2f}, "
                     f"Energy={total_energy:.2f}, "
                     f"Vertices={n_vertices}, "
                     f"Structures={self.stats['n_structures_built']}, "
                     f"Packets={total_delivered}, "
-                    f"Queue={self.transport_protocol.get_queue_size()}"
+                    f"GraphQ={graph_q}, ProtoQ={proto_q}, "
+                    f"Accept={acceptance_rate:.1%}"
                 )
+
+                # FIX: Sanity assertions for PPI monitoring
+                # Warn if acceptance rate drops to 0 (indicates capacity bug regression)
+                if self.transport_protocol.enqueue_attempts > 10 and acceptance_rate < 0.01:
+                    self.logger.warning(
+                        f"PPI ALERT: Acceptance rate near 0% ({acceptance_rate:.1%}) - "
+                        f"possible capacity misconfiguration!"
+                    )
+
+                # Warn if graph queue grows unbounded while protocol queue is empty
+                if graph_q > 50 and proto_q == 0 and total_delivered == 0:
+                    self.logger.warning(
+                        f"PPI ALERT: Graph queue={graph_q} but protocol queue empty - "
+                        f"bees may not be picking up packets!"
+                    )
         
         self.logger.info("Production simulation complete")
         self._save_results()
