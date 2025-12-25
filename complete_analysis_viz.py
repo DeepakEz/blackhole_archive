@@ -347,16 +347,22 @@ for colony in ['beavers', 'ants', 'bees']:
     print(f"    Died: {died} ({mortality_rate:.1f}%)")
     print(f"    Energy per Agent: {final_energy/alive:.3f}")
 
-# Efficiency metrics
-print(f"\n📈 System Efficiency Metrics:")
+# Work output metrics (NOT efficiency - that would require a baseline)
+print(f"\n📈 System Work Output:")
 total_work = stats['n_structures_built'] + stats['n_packets_transported']
-energy_per_work = total_decay / total_work
-work_per_energy = 1 / energy_per_work
+energy_per_work = total_decay / max(total_work, 1)
+work_per_energy = total_work / max(total_decay, 0.01)
 
-print(f"  Total Work Units: {total_work:,}")
-print(f"  Energy per Work: {energy_per_work:.3f}")
-print(f"  Work per Energy: {work_per_energy:.3f}")
-print(f"  System Efficiency: {work_per_energy*100:.2f}%")
+# Theoretical costs from energy model: BUILD_COST=0.06, net cost ~0.04 per structure
+theoretical_build_cost = 0.04  # Net cost per structure
+theoretical_max_structures = total_decay / theoretical_build_cost
+build_utilization = stats['n_structures_built'] / max(theoretical_max_structures, 1)
+
+print(f"  Total Work Units: {total_work:,} (structures + packets)")
+print(f"  Energy Spent: {total_decay:.1f} units")
+print(f"  Work per Energy: {work_per_energy:.2f} units/energy")
+print(f"  Energy per Work: {energy_per_work:.3f} energy/unit")
+print(f"  Build Utilization: {build_utilization*100:.1f}% of theoretical max structures")
 
 # Information processing rate
 info_vertices = stats['n_vertices']
@@ -808,16 +814,17 @@ Beavers: {n_agents['beavers']}/{config.get('n_beavers', 50)} alive ({n_agents['b
 Ants: {n_agents['ants']}/{config.get('n_ants', 200)} alive ({n_agents['ants']/config.get('n_ants', 200)*100:.1f}%), {config.get('n_ants', 200)-n_agents['ants']} died
 Bees: {n_agents['bees']}/{config.get('n_bees', 100)} alive ({n_agents['bees']/config.get('n_bees', 100)*100:.1f}%), {config.get('n_bees', 100)-n_agents['bees']} died
 
-SYSTEM EFFICIENCY
+WORK OUTPUT METRICS
 {'-'*80}
 Total Work: {total_work:,} units (structures + packets)
-Energy per Work: {energy_per_work:.3f}
-Work per Energy: {work_per_energy:.3f}
-System Efficiency: {work_per_energy*100:.2f}%
+Energy Spent: {total_decay:.1f} units
+Work per Energy: {work_per_energy:.2f} units/energy
+Energy per Work: {energy_per_work:.3f} energy/unit
+Build Utilization: {build_utilization*100:.1f}% of theoretical max structures
 
 Information Elements: {total_info:,} (vertices + edges)
 Information Processing Rate: {info_rate:.1f} elements/time
-Energy per Information Element: {total_decay/total_info:.4f}
+Energy per Information Element: {total_decay/max(total_info, 1):.4f}
 
 KEY FINDINGS
 {'-'*80}
@@ -825,7 +832,7 @@ KEY FINDINGS
 ✓ Beaver construction: {stats['n_structures_built']:,} structures with peak rate {structure_growth[peak_construction_idx]:.1f}/time
 ✓ Semantic graph emerged: {stats['n_vertices']:,} vertices, {stats['n_edges']:,} edges
 ✓ Transport initiated at t={first_packet_time:.1f} after {first_packet_vertices} vertices formed
-✓ System maintained {'HIGH' if work_per_energy > 0.01 else 'MODERATE' if work_per_energy > 0.005 else 'LOW'} efficiency ({work_per_energy*100:.2f}%)
+✓ Build utilization: {build_utilization*100:.1f}% (structures built / theoretical max)
 
 VISUALIZATIONS GENERATED
 {'-'*80}
@@ -865,6 +872,6 @@ print(f"  • Energy Decay: {total_decay:.1f} ({total_decay/initial_energy*100:.
 print(f"  • Structures: {stats['n_structures_built']:,}")
 print(f"  • Graph: {stats['n_vertices']:,} vertices, {stats['n_edges']:,} edges")
 print(f"  • Transport: {stats['n_packets_transported']} packets")
-print(f"  • Efficiency: {work_per_energy*100:.2f}%")
+print(f"  • Build Utilization: {build_utilization*100:.1f}%")
 
 print(f"\n{'='*80}\n")
