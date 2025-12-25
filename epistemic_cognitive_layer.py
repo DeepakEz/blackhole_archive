@@ -620,19 +620,32 @@ class EpistemicAntAgent:
                 self.current_belief_id = belief_id
                 
             else:
-                # Update existing belief
-                epistemic_graph.update_belief_from_observation(
-                    self.current_belief_id,
-                    observation
-                )
-                
-                # Track information gain
-                belief = epistemic_graph.beliefs[self.current_belief_id]
-                if len(belief.observations) > 1:
-                    ig = free_energy_computer.compute_expected_information_gain(
-                        belief, observation
+                # Check if belief still exists (may have been merged/pruned)
+                if self.current_belief_id not in epistemic_graph.beliefs:
+                    # Belief was removed by compressor, reset and create new
+                    self.current_belief_id = None
+                    salience = info_density
+                    uncertainty = 1.0 / (info_density + 0.1)
+                    belief_id = epistemic_graph.add_belief(
+                        position=observation,
+                        salience=salience,
+                        initial_uncertainty=uncertainty
                     )
-                    self.information_gain_history.append(ig)
+                    self.current_belief_id = belief_id
+                else:
+                    # Update existing belief
+                    epistemic_graph.update_belief_from_observation(
+                        self.current_belief_id,
+                        observation
+                    )
+
+                    # Track information gain
+                    belief = epistemic_graph.beliefs[self.current_belief_id]
+                    if len(belief.observations) > 1:
+                        ig = free_energy_computer.compute_expected_information_gain(
+                            belief, observation
+                        )
+                        self.information_gain_history.append(ig)
         
         # Move toward high uncertainty regions (active inference)
         # Sample nearby beliefs
