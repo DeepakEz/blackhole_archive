@@ -97,6 +97,7 @@ class ProductionBeeAgent:
 
                     # Create semantic coordinate from vertex data
                     semantic_coord = SemanticCoordinate(
+                        vertex_id=int(best_vertex),
                         embedding=vertex_mean if isinstance(vertex_mean, np.ndarray) else np.array(vertex_mean),
                         salience=float(saliences[np.argmax(saliences)]),
                         confidence=float(vertex_data.get('confidence', 0.8))
