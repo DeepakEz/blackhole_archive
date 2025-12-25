@@ -34,7 +34,11 @@ from epistemic_cognitive_layer import (
 )
 from blackhole_archive_protocols import (
     WormholeTransportProtocol,
-    Packet
+    Packet,
+    PacketType,
+    SemanticCoordinate,
+    EntropySignature,
+    CausalCertificate
 )
 
 
@@ -81,13 +85,48 @@ class ProductionBeeAgent:
                 if max(saliences) > 0.7:
                     best_vertex = vertices[np.argmax(saliences)]
                     vertex_data = semantic_graph.graph.nodes[best_vertex]
-                    
+                    vertex_position = vertex_data.get('position', self.position)
+                    vertex_mean = vertex_data.get('mean', np.random.randn(16))
+
+                    # Construct full protocol-compliant packet
+                    # Serialize semantic data to bytes
+                    if isinstance(vertex_mean, np.ndarray):
+                        payload_bytes = vertex_mean.tobytes()
+                    else:
+                        payload_bytes = np.array(vertex_mean).tobytes()
+
+                    # Create semantic coordinate from vertex data
+                    semantic_coord = SemanticCoordinate(
+                        embedding=vertex_mean if isinstance(vertex_mean, np.ndarray) else np.array(vertex_mean),
+                        salience=float(saliences[np.argmax(saliences)]),
+                        confidence=float(vertex_data.get('confidence', 0.8))
+                    )
+
+                    # Compute entropy signature for holographic verification
+                    entropy_signature = EntropySignature(
+                        total_entropy=float(len(payload_bytes)),
+                        local_curvature=float(spacetime.get_curvature(self.position)),
+                        temperature=0.0,
+                        checksum=hex(hash(payload_bytes) & 0xFFFFFFFF)
+                    )
+
+                    # Initialize causal certificate for ordering
+                    causal_cert = CausalCertificate()
+                    causal_cert.increment(self.id)
+
+                    # Build full protocol-compliant packet
                     self.current_packet = Packet(
-                        packet_id=f"{self.id}_{self.packets_delivered}",
-                        data=vertex_data.get('mean', np.random.randn(16)),
-                        source_vertex=best_vertex,
-                        priority=saliences[np.argmax(saliences)],
-                        timestamp=0.0
+                        packet_id=f"{self.id}_{self.packets_delivered}_{best_vertex}",
+                        packet_type=PacketType.DATA,
+                        data=payload_bytes,
+                        semantic_coord=semantic_coord,
+                        entropy_signature=entropy_signature,
+                        causal_cert=causal_cert,
+                        origin_time=0.0,  # Would use simulation time
+                        origin_position=self.position.copy(),
+                        priority=float(saliences[np.argmax(saliences)]),
+                        size_bytes=len(payload_bytes),
+                        created_at=0.0  # Would use simulation time
                     )
                     self.role = "transporter"
         
