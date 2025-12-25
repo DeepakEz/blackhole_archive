@@ -292,10 +292,12 @@ class EpistemicSemanticGraph:
         # Update contradiction_pairs to only valid ones
         self.contradiction_pairs = set(valid_pairs)
 
-        return sum(
-            self.beliefs[v1].salience + self.beliefs[v2].salience
-            for v1, v2 in self.contradiction_pairs
-        )
+        # Compute mass with additional safety check
+        total = 0.0
+        for v1, v2 in valid_pairs:
+            if v1 in self.beliefs and v2 in self.beliefs:
+                total += self.beliefs[v1].salience + self.beliefs[v2].salience
+        return total
 
 
 # =============================================================================
