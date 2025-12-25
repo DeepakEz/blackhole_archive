@@ -315,34 +315,43 @@ class SemanticCoordinate:
 class Packet:
     """
     Data packet for wormhole transport
-    
+
     Conforms to holographic bound: size limited by throat area
     """
     packet_id: str
-    packet_type: PacketType
-    
-    # Core payload
-    data: bytes
-    semantic_coord: SemanticCoordinate
-    
-    # Metadata
-    entropy_signature: EntropySignature
-    causal_cert: CausalCertificate
-    origin_time: float  # Proper time at origin
-    origin_position: np.ndarray  # (t, r, θ, φ)
-    
+
+    # Core payload - can be bytes or numpy array
+    data: Any  # bytes or np.ndarray
+
+    # Optional fields for simplified construction
+    priority: float = 0.5  # 0-1, higher = more urgent
+    timestamp: float = 0.0
+    source_vertex: Optional[int] = None
+
+    # Full protocol fields (optional for simplified use)
+    packet_type: PacketType = PacketType.DATA
+    semantic_coord: Optional[SemanticCoordinate] = None
+    entropy_signature: Optional[EntropySignature] = None
+    causal_cert: Optional[CausalCertificate] = None
+    origin_time: float = 0.0  # Proper time at origin
+    origin_position: Optional[np.ndarray] = None  # (t, r, θ, φ)
+
     # Transport metadata
-    priority: float  # 0-1, higher = more urgent
-    size_bytes: int
-    created_at: float
-    
+    size_bytes: int = 0
+    created_at: float = 0.0
+
     # Error correction
     error_correction_code: Optional[bytes] = None
     redundancy_level: int = 1
-    
+
     def __post_init__(self):
         if self.size_bytes == 0:
-            self.size_bytes = len(self.data)
+            if isinstance(self.data, bytes):
+                self.size_bytes = len(self.data)
+            elif isinstance(self.data, np.ndarray):
+                self.size_bytes = self.data.nbytes
+            else:
+                self.size_bytes = 100  # Default size
     
     @classmethod
     def create_from_semantic_data(cls,
