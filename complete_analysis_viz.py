@@ -847,7 +847,7 @@ Report Generated: {pd.Timestamp.now()}
 """
 
 report_path = VIZ_DIR / 'analysis_report.txt'
-with open(report_path, 'w') as f:
+with open(report_path, 'w', encoding='utf-8') as f:
     f.write(report_text)
 
 print(f"  ✅ Saved: analysis_report.txt")
