@@ -552,12 +552,16 @@ class WormholeTransportProtocol:
                  holographic_constant: float = 1.0):
         # Channel capacity from holographic bound
         # I_max = (c³ A) / (4ħG) in geometric units
-        self.max_capacity = holographic_constant * throat_area
+        # FIX: Scale capacity to be in bytes (realistic for packet transport)
+        # Base capacity scaled by 100 to allow reasonable packet sizes
+        self.max_capacity_bytes = holographic_constant * throat_area * 100  # ~5500 bytes
+        self.max_capacity = self.max_capacity_bytes  # Alias for compatibility
 
         # Max packets in flight (for holographic utilization calculation)
-        self.max_packets_in_flight = max(1, int(self.max_capacity / 100))  # Assume ~100 bytes/packet
+        # Assume ~128 bytes/packet (16 float64 values)
+        self.max_packets_in_flight = max(10, int(self.max_capacity_bytes / 128))
 
-        self.channel_state = ChannelState(capacity=self.max_capacity, current_load=0.0)
+        self.channel_state = ChannelState(capacity=self.max_capacity_bytes, current_load=0.0)
 
         # Congestion control
         self.congestion_window = 1.0  # AIMD parameter
@@ -566,57 +570,67 @@ class WormholeTransportProtocol:
         # Timing
         self.rtt_estimate = 1.0  # Round-trip time estimate
         self.rtt_variance = 0.1
-    
+
+        # FIX: Track current byte load separately from packet count
+        self.current_byte_load = 0.0
+
     def enqueue_packet(self, packet: Packet) -> bool:
         """
         Add packet to transmission queue
-        
+
         Returns True if packet accepted, False if rejected
         """
-        # Check capacity
-        projected_load = self.channel_state.current_load + packet.size_bytes
-        if projected_load > self.max_capacity * self.congestion_window:
+        # FIX: Use byte-based load tracking consistently
+        # Calculate total bytes in queue + in transit
+        queued_bytes = sum(p.size_bytes for p in self.channel_state.packet_queue)
+        in_transit_bytes = sum(p.size_bytes for p in self.channel_state.in_transit.values())
+        current_bytes = queued_bytes + in_transit_bytes
+
+        projected_load = current_bytes + packet.size_bytes
+        if projected_load > self.max_capacity_bytes * self.congestion_window:
             return False
-        
+
         # Add to queue (sorted by priority)
         self.channel_state.packet_queue.append(packet)
         self.channel_state.packet_queue.sort(key=lambda p: p.priority, reverse=True)
-        
+
         return True
     
     def transmit_packets(self, dt: float) -> List[Packet]:
         """
         Transmit packets according to bandwidth constraints
-        
+
         Returns list of packets that completed transmission
         """
         transmitted = []
-        available_bandwidth = self.max_capacity * self.congestion_window * dt
+        # FIX: Use byte-based capacity consistently
+        available_bandwidth = self.max_capacity_bytes * self.congestion_window * dt
         used_bandwidth = 0.0
-        
+
         while self.channel_state.packet_queue and used_bandwidth < available_bandwidth:
             packet = self.channel_state.packet_queue[0]
-            
+
             # Check if packet fits in remaining bandwidth
             if used_bandwidth + packet.size_bytes <= available_bandwidth:
                 # Remove from queue
                 self.channel_state.packet_queue.pop(0)
-                
+
                 # Add to in-transit
                 self.channel_state.in_transit[packet.packet_id] = packet
-                
+
                 # Update statistics
                 self.channel_state.total_packets_sent += 1
                 self.channel_state.total_bytes_sent += packet.size_bytes
                 used_bandwidth += packet.size_bytes
-                
+
                 transmitted.append(packet)
             else:
                 break
-        
-        # Update load
+
+        # FIX: Update load as packet count (for compatibility) and byte load
         self.channel_state.current_load = len(self.channel_state.in_transit)
-        
+        self.current_byte_load = sum(p.size_bytes for p in self.channel_state.in_transit.values())
+
         return transmitted
     
     def receive_packet(self, packet_id: str) -> Optional[Packet]:

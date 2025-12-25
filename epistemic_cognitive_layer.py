@@ -149,14 +149,18 @@ class EpistemicSemanticGraph:
         self.beliefs: Dict[int, EpistemicBelief] = {}
         self.embedding_dim = embedding_dim
         self.next_vertex_id = 0
-        
+
         # Pheromone trails (from base version)
         self.pheromones: Dict[Tuple[int, int], float] = {}
-        
+
         # Epistemic tracking
         self.contradiction_pairs: Set[Tuple[int, int]] = set()
         self.total_entropy: float = 0.0
         self.total_kl_drift: float = 0.0
+
+        # FIX: Packet queue system for bee transport economy
+        self.packet_queues: Dict[int, list] = {}  # vertex_id -> list of packets
+        self.max_queue_size: int = 10  # Queue capacity limit per vertex
         
     def add_belief(self, 
                    position: np.ndarray,
@@ -192,7 +196,10 @@ class EpistemicSemanticGraph:
             confidence=belief.confidence,
             position=belief.mean  # ALIAS for EnhancedBeeAgent compatibility
         )
-        
+
+        # FIX: Initialize packet queue for this vertex
+        self.packet_queues[vertex_id] = []
+
         return vertex_id
     
     def update_belief_from_observation(self, vertex_id: int, observation: np.ndarray):
@@ -205,7 +212,43 @@ class EpistemicSemanticGraph:
             self.graph.nodes[vertex_id]['salience'] = b.salience
             self.graph.nodes[vertex_id]['mean'] = b.mean
             self.graph.nodes[vertex_id]['position'] = b.mean  # Keep in sync
-    
+
+    # =========================================================================
+    # FIX: Packet Queue System for Bee Transport Economy
+    # =========================================================================
+
+    def add_packet(self, vertex_id: int, packet: dict) -> bool:
+        """
+        Add a packet to vertex queue.
+        Returns False if queue is full (congestion) or vertex doesn't exist.
+        """
+        if vertex_id not in self.packet_queues:
+            # Auto-initialize queue if belief exists but queue doesn't
+            if vertex_id in self.beliefs:
+                self.packet_queues[vertex_id] = []
+            else:
+                return False
+        if len(self.packet_queues[vertex_id]) >= self.max_queue_size:
+            return False  # Queue full - packet dropped (congestion)
+        self.packet_queues[vertex_id].append(packet)
+        return True
+
+    def get_packet(self, vertex_id: int) -> dict:
+        """Get a packet from vertex queue (FIFO). Returns None if no packet."""
+        if vertex_id not in self.packet_queues:
+            return None
+        if len(self.packet_queues[vertex_id]) == 0:
+            return None
+        return self.packet_queues[vertex_id].pop(0)
+
+    def get_queue_length(self, vertex_id: int) -> int:
+        """Get queue length at vertex"""
+        return len(self.packet_queues.get(vertex_id, []))
+
+    def get_total_queue_length(self) -> int:
+        """Get total packets queued across all vertices"""
+        return sum(len(q) for q in self.packet_queues.values())
+
     def detect_contradictions(self, threshold: float = 2.0, max_pairs: int = 1000):
         """
         Find beliefs that contradict each other
@@ -280,6 +323,10 @@ class EpistemicSemanticGraph:
             (a, b): p for (a, b), p in self.pheromones.items()
             if a != vid and b != vid
         }
+
+        # FIX: Remove packet queue for this vertex
+        if vid in self.packet_queues:
+            del self.packet_queues[vid]
 
         # Remove from graph + beliefs
         del self.beliefs[vid]
@@ -649,14 +696,27 @@ class EpistemicAntAgent:
                 # Create new belief
                 salience = info_density
                 uncertainty = 1.0 / (info_density + 0.1)  # Higher density → more certain
-                
+
                 belief_id = epistemic_graph.add_belief(
                     position=observation,
                     salience=salience,
                     initial_uncertainty=uncertainty
                 )
                 self.current_belief_id = belief_id
-                
+
+                # FIX: Generate packet for transport when creating salient belief
+                if salience > 0.3:  # Lower threshold for packet generation
+                    packet = {
+                        'content': f"belief_{belief_id}",
+                        'salience': salience,
+                        'confidence': 1.0 / uncertainty,
+                        'created_at': 0.0,  # Would use simulation time
+                        'ttl': 100.0,
+                        'source_agent': self.id,
+                        'source_vertex': belief_id
+                    }
+                    epistemic_graph.add_packet(belief_id, packet)
+
             else:
                 # Check if belief still exists (may have been merged/pruned)
                 if self.current_belief_id not in epistemic_graph.beliefs:
@@ -670,6 +730,19 @@ class EpistemicAntAgent:
                         initial_uncertainty=uncertainty
                     )
                     self.current_belief_id = belief_id
+
+                    # FIX: Generate packet for new belief after reset
+                    if salience > 0.3:
+                        packet = {
+                            'content': f"belief_{belief_id}",
+                            'salience': salience,
+                            'confidence': 1.0 / uncertainty,
+                            'created_at': 0.0,
+                            'ttl': 100.0,
+                            'source_agent': self.id,
+                            'source_vertex': belief_id
+                        }
+                        epistemic_graph.add_packet(belief_id, packet)
                 else:
                     # Update existing belief
                     epistemic_graph.update_belief_from_observation(

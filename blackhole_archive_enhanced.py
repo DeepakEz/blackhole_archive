@@ -420,22 +420,31 @@ class EnhancedAntAgent(Agent):
             # Add edges to recent vertices in path
             if len(self.path_history) > 1:
                 prev_vertex = self.path_history[-2]
+                # FIX: Add BIDIRECTIONAL edges for proper DiGraph navigation
                 semantic_graph.add_edge(prev_vertex, self.current_vertex, pheromone=1.0)
-                self.pheromone_deposits += 1
-            
-            # Choose next vertex
-            neighbors = list(semantic_graph.graph.neighbors(self.current_vertex))
-            
+                semantic_graph.add_edge(self.current_vertex, prev_vertex, pheromone=1.0)
+                self.pheromone_deposits += 2
+
+            # Choose next vertex - FIX: Use both successors and predecessors for DiGraph
+            successors = set(semantic_graph.graph.successors(self.current_vertex))
+            predecessors = set(semantic_graph.graph.predecessors(self.current_vertex))
+            neighbors = list(successors | predecessors)
+
             if neighbors:
                 # Follow pheromones probabilistically
-                pheromones = [semantic_graph.get_pheromone((self.current_vertex, n)) for n in neighbors]
+                pheromones = []
+                for n in neighbors:
+                    # Check both edge directions for pheromone
+                    p1 = semantic_graph.get_pheromone((self.current_vertex, n))
+                    p2 = semantic_graph.get_pheromone((n, self.current_vertex))
+                    pheromones.append(max(p1, p2))
                 probs = np.array(pheromones) + 0.1  # Add baseline
                 probs /= probs.sum()
-                
+
                 next_vertex = np.random.choice(neighbors, p=probs)
                 self.current_vertex = next_vertex
                 self.path_history.append(next_vertex)
-                
+
                 # Update position
                 next_pos = semantic_graph.graph.nodes[next_vertex]['position']
                 self.position = next_pos

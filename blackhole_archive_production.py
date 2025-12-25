@@ -55,9 +55,11 @@ from epistemic_enhancements import (
 
 class ProductionBeeAgent:
     """
-    Bee with full protocol integration and holographic bound enforcement
+    Bee with full protocol integration and holographic bound enforcement.
+
+    FIX: Now properly uses packet queue system instead of fabricating packets.
     """
-    
+
     def __init__(self, agent_id: str, position: np.ndarray, energy: float = 1.0):
         self.id = agent_id
         self.position = position.copy()
@@ -65,52 +67,93 @@ class ProductionBeeAgent:
         self.energy = energy
         self.state = "active"
         self.role = "scout"
-        
+
         self.current_packet = None
+        self.target_vertex = None  # FIX: Track target vertex for foraging
         self.packets_delivered = 0
         self.packets_dropped = 0
         self.congestion_backoff = 0.0
         self.congestion_count = 0
-    
+
     def update(self, dt, spacetime, semantic_graph, wormhole_position, transport_protocol):
         if self.state != "active":
             return
-        
+
         # Handle congestion backoff
         if self.congestion_backoff > 0:
             self.congestion_backoff -= dt
             if self.congestion_backoff <= 0:
                 self.role = "scout"
             return
-        
-        # Scout for packets
-        if self.role == "scout":
-            if np.random.rand() < 0.05 and len(semantic_graph.graph.nodes) > 0:
-                vertices = list(semantic_graph.graph.nodes)
-                saliences = [semantic_graph.graph.nodes[v]['salience'] for v in vertices]
-                
-                if max(saliences) > 0.7:
-                    best_vertex = vertices[np.argmax(saliences)]
-                    vertex_data = semantic_graph.graph.nodes[best_vertex]
-                    vertex_position = vertex_data.get('position', self.position)
-                    vertex_mean = vertex_data.get('mean', np.random.randn(16))
 
-                    # Construct full protocol-compliant packet
-                    # Serialize semantic data to bytes
+        # Scout for packets - FIX: Look for vertices with queued packets
+        if self.role == "scout":
+            # FIX: Increased probability from 0.05 to 0.15 for more responsive scouting
+            if np.random.rand() < 0.15 and len(semantic_graph.graph.nodes) > 0:
+                vertices = list(semantic_graph.graph.nodes)
+
+                # FIX: Score vertices by queue_length * salience + baseline salience
+                # This prioritizes vertices with actual packets waiting
+                scores = []
+                for v in vertices:
+                    queue_len = semantic_graph.get_queue_length(v)
+                    salience = semantic_graph.graph.nodes[v].get('salience', 0.5)
+                    # Score = queue_length * salience + small baseline for exploration
+                    scores.append(queue_len * salience + 0.1 * salience)
+
+                # FIX: Lower threshold from 0.7 to 0.0 - accept any vertex with packets
+                if max(scores) > 0:
+                    best_idx = np.argmax(scores)
+                    best_vertex = vertices[best_idx]
+                    self.target_vertex = best_vertex
+                    self.role = "forager"
+
+        # FIX: New forager state - move to target vertex to pick up packet
+        elif self.role == "forager":
+            if self.target_vertex is None:
+                self.role = "scout"
+                return
+
+            vertex_data = semantic_graph.graph.nodes.get(self.target_vertex)
+            if vertex_data is None:
+                # Vertex was removed
+                self.target_vertex = None
+                self.role = "scout"
+                return
+
+            target_pos = vertex_data.get('position', self.position)
+            # Handle dimension mismatch
+            if len(target_pos) > len(self.position):
+                target_pos = target_pos[:len(self.position)]
+            elif len(target_pos) < len(self.position):
+                target_pos = np.pad(target_pos, (0, len(self.position) - len(target_pos)))
+
+            direction = target_pos - self.position
+            distance = np.linalg.norm(direction)
+
+            if distance > 0.5:
+                self.velocity = 0.3 * direction / (distance + 1e-6)
+            else:
+                # At target vertex - try to pick up packet from queue
+                queued_packet = semantic_graph.get_packet(self.target_vertex)
+
+                if queued_packet is not None:
+                    # Got a packet from queue - convert to protocol Packet
+                    vertex_mean = vertex_data.get('mean', np.random.randn(16))
                     if isinstance(vertex_mean, np.ndarray):
                         payload_bytes = vertex_mean.tobytes()
                     else:
                         payload_bytes = np.array(vertex_mean).tobytes()
 
-                    # Create semantic coordinate from vertex data
+                    # Create semantic coordinate
                     semantic_coord = SemanticCoordinate(
-                        vertex_id=int(best_vertex),
+                        vertex_id=int(self.target_vertex),
                         embedding=vertex_mean if isinstance(vertex_mean, np.ndarray) else np.array(vertex_mean),
-                        salience=float(saliences[np.argmax(saliences)]),
-                        confidence=float(vertex_data.get('confidence', 0.8))
+                        salience=float(queued_packet.get('salience', 0.5)),
+                        confidence=float(queued_packet.get('confidence', 0.8))
                     )
 
-                    # Compute entropy signature for holographic verification
+                    # Compute entropy signature
                     entropy_signature = EntropySignature(
                         total_entropy=float(len(payload_bytes)),
                         local_curvature=float(spacetime.get_curvature(self.position)),
@@ -118,43 +161,48 @@ class ProductionBeeAgent:
                         checksum=hex(hash(payload_bytes) & 0xFFFFFFFF)
                     )
 
-                    # Initialize causal certificate for ordering
+                    # Initialize causal certificate
                     causal_cert = CausalCertificate()
                     causal_cert.increment(self.id)
 
-                    # Build full protocol-compliant packet
+                    # Build protocol-compliant packet from queue data
                     self.current_packet = Packet(
-                        packet_id=f"{self.id}_{self.packets_delivered}_{best_vertex}",
+                        packet_id=f"{self.id}_{self.packets_delivered}_{self.target_vertex}",
                         packet_type=PacketType.DATA,
                         data=payload_bytes,
                         semantic_coord=semantic_coord,
                         entropy_signature=entropy_signature,
                         causal_cert=causal_cert,
-                        origin_time=0.0,  # Would use simulation time
+                        origin_time=queued_packet.get('created_at', 0.0),
                         origin_position=self.position.copy(),
-                        priority=float(saliences[np.argmax(saliences)]),
+                        priority=float(queued_packet.get('salience', 0.5)),
                         size_bytes=len(payload_bytes),
-                        created_at=0.0  # Would use simulation time
+                        created_at=queued_packet.get('created_at', 0.0)
                     )
                     self.role = "transporter"
-        
+                else:
+                    # No packet at this vertex - go back to scouting
+                    self.target_vertex = None
+                    self.role = "scout"
+
         # Transport to wormhole
         elif self.role == "transporter":
             direction = wormhole_position - self.position
             distance = np.linalg.norm(direction)
-            
+
             if distance > 0.1:
                 self.velocity = 0.5 * direction / distance
             else:
                 self.velocity *= 0.1
-            
+
             # At wormhole: attempt protocol transmission
             if distance < 0.5 and self.current_packet is not None:
                 success = transport_protocol.enqueue_packet(self.current_packet)
-                
+
                 if success:
                     self.packets_delivered += 1
                     self.current_packet = None
+                    self.target_vertex = None
                     self.role = "scout"
                     self.congestion_count = 0
                 else:
@@ -163,11 +211,11 @@ class ProductionBeeAgent:
                     self.congestion_count += 1
                     self.congestion_backoff = 0.5 * (2 ** min(self.congestion_count, 5))
                     self.role = "congestion_wait"
-        
+
         # Update position
         self.position += dt * self.velocity
         self.energy -= dt * 0.004
-        
+
         if self.energy <= 0:
             self.state = "dead"
 
