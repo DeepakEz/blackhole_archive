@@ -328,9 +328,8 @@ class BeliefCompressor:
         self.graph.graph.nodes[vid1]['confidence'] = b1.confidence
         self.graph.graph.nodes[vid1]['salience'] = b1.salience
 
-        # Remove b2
-        del self.graph.beliefs[vid2]
-        self.graph.graph.remove_node(vid2)
+        # Remove b2 using proper cleanup to avoid ghost references
+        self.graph._remove_belief(vid2)
 
         self.merges_performed += 1
         return vid1
@@ -362,11 +361,10 @@ class BeliefCompressor:
                     to_remove.append(b.vertex_id)
                     break
 
-        # Remove redundant beliefs
+        # Remove redundant beliefs using proper cleanup
         for vid in set(to_remove):
             if vid in self.graph.beliefs:
-                del self.graph.beliefs[vid]
-                self.graph.graph.remove_node(vid)
+                self.graph._remove_belief(vid)
                 self.pruned_beliefs += 1
 
         return len(set(to_remove))

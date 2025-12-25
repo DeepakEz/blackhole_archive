@@ -257,16 +257,44 @@ class EpistemicSemanticGraph:
             b1.contradicted_by.add(v2)
             b2.contradicted_by.add(v1)
     
+    def _remove_belief(self, vid: int):
+        """Remove belief + all references to it (contradictions, edges, pheromones)."""
+        if vid not in self.beliefs:
+            return
+
+        # Remove references in other beliefs
+        for b in self.beliefs.values():
+            if vid in b.contradicted_by:
+                b.contradicted_by.discard(vid)
+            if vid in b.supports:
+                b.supports.discard(vid)
+
+        # Remove contradiction pairs containing vid
+        self.contradiction_pairs = {
+            (a, b) for (a, b) in self.contradiction_pairs
+            if a != vid and b != vid
+        }
+
+        # Remove pheromones tied to vid
+        self.pheromones = {
+            (a, b): p for (a, b), p in self.pheromones.items()
+            if a != vid and b != vid
+        }
+
+        # Remove from graph + beliefs
+        del self.beliefs[vid]
+        if self.graph.has_node(vid):
+            self.graph.remove_node(vid)
+
     def prune_low_confidence_beliefs(self, confidence_threshold: float = 0.1):
         """Remove beliefs with very high uncertainty"""
         to_remove = [
             vid for vid, belief in self.beliefs.items()
             if belief.confidence < confidence_threshold
         ]
-        
+
         for vid in to_remove:
-            del self.beliefs[vid]
-            self.graph.remove_node(vid)
+            self._remove_belief(vid)
     
     def diffuse_uncertainty(self, dt: float, diffusion_rate: float = 0.01):
         """All beliefs become less certain over time without evidence"""
@@ -292,10 +320,12 @@ class EpistemicSemanticGraph:
         # Update contradiction_pairs to only valid ones
         self.contradiction_pairs = set(valid_pairs)
 
-        return sum(
-            self.beliefs[v1].salience + self.beliefs[v2].salience
-            for v1, v2 in self.contradiction_pairs
-        )
+        # Compute mass with additional safety check
+        total = 0.0
+        for v1, v2 in valid_pairs:
+            if v1 in self.beliefs and v2 in self.beliefs:
+                total += self.beliefs[v1].salience + self.beliefs[v2].salience
+        return total
 
 
 # =============================================================================
