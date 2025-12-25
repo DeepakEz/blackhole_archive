@@ -281,9 +281,17 @@ class EpistemicSemanticGraph:
     def compute_contradiction_mass(self) -> float:
         """
         S_t = Σ_{(i,j) contradicting} (salience_i + salience_j)
-        
+
         Measures semantic tension in the system
         """
+        # Filter out pairs where beliefs have been removed by compressor
+        valid_pairs = [
+            (v1, v2) for v1, v2 in self.contradiction_pairs
+            if v1 in self.beliefs and v2 in self.beliefs
+        ]
+        # Update contradiction_pairs to only valid ones
+        self.contradiction_pairs = set(valid_pairs)
+
         return sum(
             self.beliefs[v1].salience + self.beliefs[v2].salience
             for v1, v2 in self.contradiction_pairs
