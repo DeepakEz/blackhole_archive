@@ -387,19 +387,65 @@ class EnhancedAntAgent(Agent):
         self.pheromone_deposits = 0
         self.path_history = []
         self.packets_generated = 0
+        self.last_position = None  # For co-occurrence edge creation
+        self.discovery_times = {}  # vertex_id -> discovery_time for temporal edges
 
-    def update(self, dt: float, spacetime: EnhancedSpacetime, semantic_graph):
+    def _find_nearby_vertex(self, semantic_graph, distance_threshold: float = 2.0):
+        """Find the closest existing vertex within distance threshold."""
+        closest_vertex = None
+        closest_distance = float('inf')
+
+        for v in semantic_graph.graph.nodes():
+            node_data = semantic_graph.graph.nodes.get(v, {})
+            if 'position' not in node_data:
+                continue
+            pos = node_data['position']
+            # Use spatial distance (ignore time component)
+            dist = np.linalg.norm(self.position[1:] - pos[1:])
+            if dist < distance_threshold and dist < closest_distance:
+                closest_distance = dist
+                closest_vertex = v
+
+        return closest_vertex
+
+    def _find_all_nearby_vertices(self, semantic_graph, distance_threshold: float = 3.0):
+        """Find all existing vertices within distance threshold."""
+        nearby = []
+        for v in semantic_graph.graph.nodes():
+            node_data = semantic_graph.graph.nodes.get(v, {})
+            if 'position' not in node_data:
+                continue
+            pos = node_data['position']
+            dist = np.linalg.norm(self.position[1:] - pos[1:])
+            if dist < distance_threshold:
+                nearby.append(v)
+        return nearby
+
+    def update(self, dt: float, spacetime: EnhancedSpacetime, semantic_graph, current_time: float = 0.0):
         # Sample local information
         info_density = spacetime.get_information_density(self.position)
 
-        # If high information density, create vertex
+        # If high information density, create vertex or attach to nearby existing one
         if info_density > 0.5 and self.current_vertex is None:
-            vertex_id = semantic_graph.add_vertex(
-                position=self.position.copy(),
-                salience=info_density
-            )
+            # Check for nearby existing vertices first (spatial co-occurrence)
+            nearby_vertex = self._find_nearby_vertex(semantic_graph, distance_threshold=2.0)
+
+            if nearby_vertex is not None:
+                # Attach to existing vertex instead of creating new one
+                vertex_id = nearby_vertex
+                # Update last_accessed time (FIX: vertices were never refreshed)
+                semantic_graph.graph.nodes[vertex_id]['last_accessed'] = current_time
+            else:
+                # Create new vertex
+                vertex_id = semantic_graph.add_vertex(
+                    position=self.position.copy(),
+                    salience=info_density
+                )
+                semantic_graph.graph.nodes[vertex_id]['last_accessed'] = current_time
+
             self.current_vertex = vertex_id
             self.path_history.append(vertex_id)
+            self.discovery_times[vertex_id] = current_time
 
             # FIX #3: Generate packet when discovering salient vertex
             if info_density > 0.5:  # Lower threshold to enable packet flow
@@ -417,13 +463,33 @@ class EnhancedAntAgent(Agent):
         
         # If at vertex, deposit pheromone and move to neighbor
         if self.current_vertex is not None:
-            # Add edges to recent vertices in path
+            # Update last_accessed for current vertex
+            if self.current_vertex in semantic_graph.graph:
+                semantic_graph.graph.nodes[self.current_vertex]['last_accessed'] = current_time
+
+            # EDGE POLICY 1: Temporal adjacency - connect sequential discoveries
             if len(self.path_history) > 1:
                 prev_vertex = self.path_history[-2]
-                # FIX: Add BIDIRECTIONAL edges for proper DiGraph navigation
-                semantic_graph.add_edge(prev_vertex, self.current_vertex, pheromone=1.0)
-                semantic_graph.add_edge(self.current_vertex, prev_vertex, pheromone=1.0)
-                self.pheromone_deposits += 2
+                if prev_vertex in semantic_graph.graph and self.current_vertex in semantic_graph.graph:
+                    # Add BIDIRECTIONAL edges for proper DiGraph navigation
+                    semantic_graph.add_edge(prev_vertex, self.current_vertex, pheromone=1.0)
+                    semantic_graph.add_edge(self.current_vertex, prev_vertex, pheromone=1.0)
+                    self.pheromone_deposits += 2
+
+            # EDGE POLICY 2: Co-occurrence - connect vertices discovered close in time
+            recent_discoveries = [v for v, t in self.discovery_times.items()
+                                  if current_time - t < 5.0 and v != self.current_vertex
+                                  and v in semantic_graph.graph]
+            for other_vertex in recent_discoveries[-3:]:  # Limit to 3 most recent
+                if not semantic_graph.graph.has_edge(self.current_vertex, other_vertex):
+                    semantic_graph.add_edge(self.current_vertex, other_vertex, pheromone=0.5)
+                    semantic_graph.add_edge(other_vertex, self.current_vertex, pheromone=0.5)
+
+            # EDGE POLICY 3: Spatial proximity - connect to nearby vertices
+            for nearby_v in self._find_all_nearby_vertices(semantic_graph, distance_threshold=3.0):
+                if nearby_v != self.current_vertex and not semantic_graph.graph.has_edge(self.current_vertex, nearby_v):
+                    semantic_graph.add_edge(self.current_vertex, nearby_v, pheromone=0.3)
+                    semantic_graph.add_edge(nearby_v, self.current_vertex, pheromone=0.3)
 
             # Choose next vertex - FIX: Use both successors and predecessors for DiGraph
             successors = set(semantic_graph.graph.successors(self.current_vertex))
@@ -449,13 +515,15 @@ class EnhancedAntAgent(Agent):
                 node_data = semantic_graph.graph.nodes.get(next_vertex, {})
                 if 'position' in node_data:
                     self.position = node_data['position']
+                    # Update last_accessed when moving to vertex
+                    semantic_graph.graph.nodes[next_vertex]['last_accessed'] = current_time
                 else:
                     # Vertex missing position data, reset to exploration mode
                     self.current_vertex = None
             else:
                 # No neighbors, explore
                 self.current_vertex = None
-        
+
         # Random walk if not at vertex
         if self.current_vertex is None:
             # FIX #2: Use exploration bias from structural field
@@ -899,7 +967,7 @@ class EnhancedSimulationEngine:
 
             for ant in self.agents['ants']:
                 if ant.state == "active":
-                    ant.update(self.config.dt, self.spacetime, self.semantic_graph)
+                    ant.update(self.config.dt, self.spacetime, self.semantic_graph, current_time=t)
 
             for bee in self.agents['bees']:
                 if bee.state == "active":
