@@ -239,12 +239,12 @@ class ProductionSimulationEngine:
     
     def _setup_logging(self):
         Path(self.config.output_dir).mkdir(parents=True, exist_ok=True)
-        
+
         logging.basicConfig(
             level=logging.INFO,
             format='%(asctime)s - %(levelname)s - %(message)s',
             handlers=[
-                logging.FileHandler(f"{self.config.output_dir}/production_simulation.log"),
+                logging.FileHandler(f"{self.config.output_dir}/simulation.log"),
                 logging.StreamHandler()
             ]
         )
@@ -422,13 +422,15 @@ class ProductionSimulationEngine:
                     self.transport_protocol.get_queue_size() / self.transport_protocol.max_packets_in_flight
                 )
             
-            # LOGGING
+            # LOGGING - format compatible with complete_analysis_viz.py
             if step % 100 == 0:
+                n_vertices = len(self.epistemic_graph.graph.nodes) if hasattr(self.epistemic_graph, 'graph') else len(self.epistemic_graph.beliefs)
                 self.logger.info(
-                    f"t={t:.2f}, E={total_energy:.2f}, "
-                    f"Beliefs={len(self.epistemic_graph.beliefs)}, "
-                    f"H={self.stats['total_entropy'][-1] if self.stats['total_entropy'] else 0:.1f}, "
-                    f"Packets={total_delivered}/{total_dropped} (delivered/dropped), "
+                    f"Step {step}/{n_steps}, t={t:.2f}, "
+                    f"Energy={total_energy:.2f}, "
+                    f"Vertices={n_vertices}, "
+                    f"Structures={self.stats['n_structures_built']}, "
+                    f"Packets={total_delivered}, "
                     f"Queue={self.transport_protocol.get_queue_size()}"
                 )
         
@@ -436,18 +438,40 @@ class ProductionSimulationEngine:
         self._save_results()
     
     def _save_results(self):
-        report_path = Path(self.config.output_dir) / "production_report.json"
-        
+        """Save results in format compatible with complete_analysis_viz.py"""
+        from dataclasses import asdict
+        report_path = Path(self.config.output_dir) / "simulation_report.json"
+
+        # Count alive agents
+        n_agents_alive = {
+            'beavers': sum(1 for a in self.agents['beavers'] if a.state == "active"),
+            'ants': sum(1 for a in self.agents['ants'] if a.state == "active"),
+            'bees': sum(1 for a in self.agents['bees'] if a.state == "active")
+        }
+
+        # Get graph statistics
+        n_vertices = len(self.epistemic_graph.graph.nodes) if hasattr(self.epistemic_graph, 'graph') else len(self.epistemic_graph.beliefs)
+        n_edges = len(self.epistemic_graph.graph.edges) if hasattr(self.epistemic_graph, 'graph') else 0
+
+        # Standard format expected by viz script
         report = {
-            'architecture': 'Complete Production System v1.0',
-            'layers': {
-                'physics': 'EnhancedSpacetime (Kretschmann curvature)',
-                'cognition': 'Epistemic (beliefs + uncertainty + free energy + Overmind)',
-                'protocol': 'WormholeTransportProtocol (holographic bound enforcement)'
-            },
-            'substrate_statistics': {
+            'config': asdict(self.config),
+            'final_statistics': {
                 'n_structures_built': self.stats['n_structures_built'],
-                'total_energy': self.stats['total_energy']
+                'total_energy': self.stats['total_energy'],
+                'n_vertices': n_vertices,
+                'n_edges': n_edges,
+                'n_packets_transported': self.stats['packets_delivered'][-1] if self.stats['packets_delivered'] else 0
+            },
+            'n_agents_alive': n_agents_alive,
+            # Extended production statistics
+            'production_metadata': {
+                'architecture': 'Complete Production System v1.0',
+                'layers': {
+                    'physics': 'EnhancedSpacetime (Kretschmann curvature)',
+                    'cognition': 'Epistemic (beliefs + uncertainty + free energy + Overmind)',
+                    'protocol': 'WormholeTransportProtocol (holographic bound enforcement)'
+                }
             },
             'epistemic_statistics': {
                 'final_entropy': self.stats['total_entropy'][-1] if self.stats['total_entropy'] else 0,
@@ -462,10 +486,10 @@ class ProductionSimulationEngine:
                 'holographic_bound_respected': True
             }
         }
-        
+
         with open(report_path, 'w') as f:
             json.dump(report, f, indent=2)
-        
+
         self.logger.info(f"Report saved to {report_path}")
 
 

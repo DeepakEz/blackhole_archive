@@ -30,30 +30,74 @@ plt.rcParams['font.size'] = 10
 # CONFIGURATION
 # ============================================================================
 
-# Try multiple possible result directories
-POSSIBLE_DIRS = [
-    Path("enhanced_results"),
-    Path("results"),
-    Path("/tmp/simulation_test"),
-    Path("blackhole_archive_output"),
-]
+def find_results_directory(specified_path=None):
+    """
+    Find the results directory to analyze.
 
-RESULTS_DIR = None
-for d in POSSIBLE_DIRS:
-    if d.exists():
-        # Check for report file
-        if (d / "enhanced_simulation_report.json").exists():
-            RESULTS_DIR = d
-            break
-        elif (d / "simulation_report.json").exists():
-            RESULTS_DIR = d
-            break
+    Priority:
+    1. Command-line specified path
+    2. Most recent timestamped subdirectory in results/
+    3. Legacy directory names (enhanced_results, blackhole_archive_output, etc.)
+    """
+    # If user specified a path, use it
+    if specified_path:
+        p = Path(specified_path)
+        if p.exists():
+            return p
+        else:
+            print(f"❌ Specified path does not exist: {specified_path}")
+            sys.exit(1)
+
+    # Check for timestamped subdirectories in results/
+    results_root = Path("results")
+    if results_root.exists():
+        subdirs = sorted(
+            [d for d in results_root.iterdir() if d.is_dir()],
+            key=lambda x: x.stat().st_mtime,
+            reverse=True  # Most recent first
+        )
+        for subdir in subdirs:
+            if (subdir / "simulation_report.json").exists():
+                return subdir
+            if (subdir / "enhanced_simulation_report.json").exists():
+                return subdir
+
+    # Legacy: check older directory names
+    legacy_dirs = [
+        Path("enhanced_results"),
+        Path("results"),
+        Path("/tmp/simulation_test"),
+        Path("blackhole_archive_output"),
+    ]
+
+    for d in legacy_dirs:
+        if d.exists():
+            if (d / "enhanced_simulation_report.json").exists():
+                return d
+            elif (d / "simulation_report.json").exists():
+                return d
+
+    return None
+
+# Parse command-line argument for results directory
+import argparse
+parser = argparse.ArgumentParser(description="Analyze Blackhole Archive simulation results")
+parser.add_argument('--results', '-r', type=str, default=None,
+                    help='Path to results directory (default: auto-detect most recent)')
+args, _ = parser.parse_known_args()
+
+RESULTS_DIR = find_results_directory(args.results)
 
 if RESULTS_DIR is None:
-    print("❌ No results directory found. Tried:")
-    for d in POSSIBLE_DIRS:
-        print(f"  - {d}")
-    print("\nRun the simulation first, or specify the correct path.")
+    print("❌ No results directory found.")
+    print("\nLooked in:")
+    print("  - results/<timestamp>_<engine>/ subdirectories")
+    print("  - enhanced_results/")
+    print("  - blackhole_archive_output/")
+    print("\nRun the simulation first:")
+    print("  python blackhole_archive_main.py --engine production --mode demo")
+    print("\nOr specify a path:")
+    print("  python complete_analysis_viz.py --results path/to/results")
     sys.exit(1)
 
 VIZ_DIR = RESULTS_DIR / "advanced_visualizations"
