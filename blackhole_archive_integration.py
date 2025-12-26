@@ -18,6 +18,27 @@ The integration creates a two-layer cognitive architecture:
 - DEEP LAYER: Blackhole Archive (compressed, causally isolated, massive capacity)
 
 Analogous to biological cortex-hippocampus system, but with event horizons.
+
+IMPORTANT: SIMULATION-ONLY IMPLEMENTATION
+==========================================
+This module provides LOCAL SIMULATION BACKENDS, not real external integrations:
+
+- MycoNetBackend: A local field-simulation class (defined in _initialize_myconet)
+  that simulates agent-based field dynamics. This is NOT a connection to an
+  external MycoNet 3.0 system.
+
+- ArchiveBackend: A local semantic indexing class (defined in _initialize_archive)
+  that provides embedding-based packet storage and retrieval. This is NOT a
+  connection to an external distributed archive system.
+
+The async interfaces (query_archive, etc.) simulate network latency but execute
+locally. For production use, these backends would need to be replaced with
+actual network clients connecting to real MycoNet and Archive services.
+
+The simulation is designed for:
+- Research into multi-layer cognitive architectures
+- Testing integration patterns before real system deployment
+- Demonstrating the conceptual architecture without infrastructure dependencies
 """
 
 import numpy as np
@@ -141,7 +162,12 @@ class ArchiveInterface:
         
         # Pending queries
         self.pending_queries: Dict[str, MemoryQuery] = {}
-        
+
+        # Prefetch queue for deferred async processing
+        # Fixes async/sync architecture: tasks are queued here and processed
+        # via process_prefetch_queue() instead of orphaned create_task() calls
+        self.prefetch_queue: List[MemoryQuery] = []
+
         # Statistics
         self.total_queries = 0
         self.average_latency = 0.0
@@ -227,13 +253,48 @@ class ArchiveInterface:
     
     def prefetch(self, predicted_queries: List[MemoryQuery]):
         """
-        Prefetch likely needed memories
-        
-        Uses MycoNet's predictive capabilities to anticipate memory needs
+        Queue queries for prefetching.
+
+        Previously used asyncio.create_task() which orphaned tasks when called
+        from synchronous code. Now queues queries for batch processing via
+        process_prefetch_queue().
         """
         for query in predicted_queries:
-            # Submit query asynchronously without blocking
-            asyncio.create_task(self.query_archive(query))
+            # Queue for deferred processing instead of orphaned create_task
+            self.prefetch_queue.append(query)
+
+    def process_prefetch_queue(self):
+        """
+        Process queued prefetch queries synchronously.
+
+        Call this periodically from the simulation loop to actually execute
+        the prefetched queries. Results are cached for later retrieval.
+        """
+        if not self.prefetch_queue:
+            return
+
+        # Process all queued queries
+        queries_to_process = self.prefetch_queue[:]
+        self.prefetch_queue.clear()
+
+        for query in queries_to_process:
+            # Check cache first
+            cache_key = self._compute_cache_key(query)
+            if cache_key in self.query_cache:
+                continue  # Already cached
+
+            # Execute query synchronously (simulated latency)
+            try:
+                # Translate and execute
+                archive_query = self._translate_to_archive_query(query)
+                response = self.archive.query(archive_query)
+
+                # Cache result
+                memory_response = self._translate_from_archive_response(response, query)
+                self.query_cache[cache_key] = memory_response
+            except Exception:
+                # Query failed, will retry next time
+                pass
     
     def _compute_cache_key(self, query: MemoryQuery) -> str:
         """Compute cache key from query"""
@@ -502,9 +563,15 @@ class MycoNetMemoryLayer:
                 self._handle_memory_request(agent)
     
     def _handle_memory_request(self, agent):
-        """Handle memory request from MycoNet agent"""
+        """
+        Handle memory request from MycoNet agent.
+
+        Processes the request synchronously instead of using orphaned
+        asyncio.create_task() calls which would never execute in a
+        synchronous simulation loop.
+        """
         request = agent.memory_request
-        
+
         # Create archive query
         query = MemoryQuery(
             query_id=f"agent_{agent.id}_query",
@@ -514,10 +581,29 @@ class MycoNetMemoryLayer:
             importance=request.get('importance', 0.5),
             callback=lambda response: self._inject_memory_into_agent(agent, response)
         )
-        
-        # Submit asynchronously
-        asyncio.create_task(self.archive.query_archive(query))
-        
+
+        # Process query synchronously (fixes broken async pattern)
+        try:
+            # Use the synchronous query path via interface
+            cache_key = self.archive._compute_cache_key(query) if hasattr(self.archive, '_compute_cache_key') else str(query.query_id)
+
+            # Check cache first
+            if hasattr(self.archive, 'query_cache') and cache_key in self.archive.query_cache:
+                response = self.archive.query_cache[cache_key]
+            else:
+                # Execute query synchronously
+                archive_query = self.archive._translate_to_archive_query(query) if hasattr(self.archive, '_translate_to_archive_query') else query
+                result = self.archive.archive.query(archive_query) if hasattr(self.archive, 'archive') else None
+                response = self.archive._translate_from_archive_response(result, query) if result and hasattr(self.archive, '_translate_from_archive_response') else None
+
+            # Execute callback if we got a response
+            if response is not None and query.callback:
+                query.callback(response)
+
+        except Exception:
+            # Query failed, callback not executed
+            pass
+
         # Clear request
         agent.memory_request = None
     
@@ -780,15 +866,21 @@ class IntegratedSystem:
         )
     
     def run_simulation(self, n_steps: int):
-        """Run integrated simulation"""
+        """
+        Run integrated simulation.
+
+        Note: This is a synchronous simulation loop. Async operations (like
+        prefetch) are queued and processed synchronously via process_prefetch_queue()
+        to avoid orphaned asyncio tasks.
+        """
         for t in range(n_steps):
             # Update MycoNet
             self.myconet.step()
-            
+
             # Update memory layer
             self.memory_layer.update(timestep=t)
-            
-            # Predictive retrieval
+
+            # Predictive retrieval - queue queries for prefetching
             if t % 10 == 0:
                 current_state = self.myconet.get_field_state()
                 predicted_queries = self.predictive_retrieval.predict_memory_needs(
@@ -796,7 +888,11 @@ class IntegratedSystem:
                     horizon=10
                 )
                 self.interface.prefetch(predicted_queries)
-            
+
+            # Process prefetch queue (executes queued queries synchronously)
+            # This replaces the broken asyncio.create_task() pattern
+            self.interface.process_prefetch_queue()
+
             # RL-based consolidation
             if t % 100 == 0:
                 current_state = self.myconet.get_field_state()

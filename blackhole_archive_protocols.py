@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Any, Tuple, Union
 from enum import Enum
 import hashlib
+import hmac
 import json
 from datetime import datetime
 import uuid
@@ -87,18 +88,27 @@ class MessageHeader:
         return json.dumps(data).encode('utf-8')
     
     def sign(self, secret_key: bytes):
-        """Generate HMAC signature"""
-        h = hashlib.sha256()
-        h.update(secret_key)
-        h.update(self.serialize())
-        self.signature = h.hexdigest()
-    
+        """
+        Generate HMAC-SHA256 signature.
+
+        Uses proper HMAC construction: H(K ⊕ opad || H(K ⊕ ipad || M))
+        This prevents length extension attacks that would be possible
+        with naive H(key || message) construction.
+        """
+        self.signature = hmac.new(
+            secret_key, self.serialize(), hashlib.sha256
+        ).hexdigest()
+
     def verify(self, secret_key: bytes) -> bool:
-        """Verify message authenticity"""
-        h = hashlib.sha256()
-        h.update(secret_key)
-        h.update(self.serialize())
-        return h.hexdigest() == self.signature
+        """
+        Verify message authenticity using constant-time comparison.
+
+        Uses hmac.compare_digest to prevent timing attacks.
+        """
+        expected = hmac.new(
+            secret_key, self.serialize(), hashlib.sha256
+        ).hexdigest()
+        return hmac.compare_digest(expected, self.signature or "")
 
 @dataclass
 class Message:
