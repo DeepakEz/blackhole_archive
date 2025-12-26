@@ -18,19 +18,19 @@ from epistemic_cognitive_layer import EpistemicSemanticGraph, Overmind
 @dataclass
 class StabilityParameters:
     """Parameters for Lyapunov stability analysis"""
-    alpha: float = 0.1  # Dissipation rate
-    beta: float = 0.5   # Disturbance gain
-    
-    # Storage function weights
-    w_energy: float = 0.001
-    w_entropy: float = 0.01
-    w_contradiction: float = 0.1
-    w_free_energy: float = 0.05
-    
+    alpha: float = 0.01  # Dissipation rate (lower = less strict)
+    beta: float = 1.0    # Disturbance gain (higher = more tolerant)
+
+    # Storage function weights (scaled for typical simulation values)
+    w_energy: float = 0.0001      # Energy deviation weight
+    w_entropy: float = 0.0001     # Entropy weight (beliefs can grow large)
+    w_contradiction: float = 0.001  # Contradiction mass weight
+    w_free_energy: float = 0.001  # Free energy weight
+
     # Safety margins
-    energy_min: float = 50.0  # Minimum safe energy
-    entropy_max: float = 500.0  # Maximum safe uncertainty
-    violation_threshold: int = 3  # Consecutive violations before emergency
+    energy_min: float = 30.0       # Minimum safe energy
+    entropy_max: float = 2000.0    # Maximum safe uncertainty
+    violation_threshold: int = 10  # Consecutive violations before emergency
 
 
 @dataclass

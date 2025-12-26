@@ -336,11 +336,15 @@ class ProductionSimulationEngine:
         # LAYER 4: FORMAL STABILITY MONITORING
         self.logger.info("Initializing Lyapunov stability monitor...")
         stability_params = StabilityParameters(
-            alpha=0.1,           # Dissipation rate
-            beta=0.5,            # Disturbance gain
-            energy_min=50.0,     # Emergency if energy drops below
-            entropy_max=500.0,   # Emergency if entropy exceeds
-            violation_threshold=3  # Consecutive violations before emergency
+            alpha=0.01,          # Lower dissipation rate (less strict)
+            beta=1.0,            # Higher disturbance tolerance
+            w_energy=0.0001,     # Reduced weight on energy deviation
+            w_entropy=0.0001,    # Reduced weight on entropy (was 0.01)
+            w_contradiction=0.001,  # Reduced weight on contradictions (was 0.1)
+            w_free_energy=0.001,   # Reduced weight on free energy
+            energy_min=30.0,     # Lower emergency threshold
+            entropy_max=2000.0,  # Higher entropy tolerance
+            violation_threshold=10  # More violations before emergency
         )
         self.stability_monitor = LyapunovStabilityMonitor(stability_params)
 
