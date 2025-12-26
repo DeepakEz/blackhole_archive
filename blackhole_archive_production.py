@@ -270,7 +270,9 @@ class ProductionSimulationEngine:
         # AGENTS
         self.logger.info("Initializing production agents...")
         self.agents = self._initialize_agents()
-        self.wormhole_position = np.array([0.0, 2.6, np.pi/2, 0.0])
+        # Wormhole position - derived from config instead of hardcoded
+        wormhole_r = getattr(config, 'throat_radius', 2.0) + 0.6
+        self.wormhole_position = np.array([0.0, wormhole_r, np.pi/2, 0.0])
         
         # STATISTICS
         self.stats = {

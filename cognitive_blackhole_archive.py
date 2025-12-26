@@ -61,8 +61,9 @@ class CognitiveSimulationEngine:
         self.logger.info("Initializing cognitive agents...")
         self.agents = self._initialize_cognitive_agents()
         
-        # Wormhole
-        self.wormhole_position = np.array([0.0, 2.6, np.pi/2, 0.0])
+        # Wormhole position - derived from config instead of hardcoded
+        wormhole_r = getattr(config, 'throat_radius', 2.0) + 0.6
+        self.wormhole_position = np.array([0.0, wormhole_r, np.pi/2, 0.0])
         
         # Statistics
         self.stats = {

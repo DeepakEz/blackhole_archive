@@ -160,7 +160,129 @@ class EnhancedSpacetime:
         """Get time dilation factor"""
         r = position[1]
         return 1 / np.sqrt(max(1e-10, 1 - self.r_s / r))
-    
+
+    def compute_christoffel(self, position: np.ndarray) -> np.ndarray:
+        """
+        Compute Christoffel symbols at position for geodesic motion.
+
+        For Schwarzschild metric, the non-zero components are:
+        Γ^t_tr = M / (r(r - 2M))
+        Γ^r_tt = M(r - 2M) / r³
+        Γ^r_rr = -M / (r(r - 2M))
+        Γ^r_θθ = -(r - 2M)
+        Γ^r_φφ = -(r - 2M)sin²θ
+        Γ^θ_rθ = 1/r
+        Γ^θ_φφ = -sinθ cosθ
+        Γ^φ_rφ = 1/r
+        Γ^φ_θφ = cotθ
+        """
+        r = max(position[1], self.r_s * 1.01)  # Avoid singularity
+        theta = position[2]
+        M = self.M
+
+        Gamma = np.zeros((4, 4, 4))
+
+        # Avoid division by zero
+        f = 1 - 2*M/r
+        if f < 1e-10:
+            f = 1e-10
+
+        sin_theta = np.sin(theta)
+        cos_theta = np.cos(theta)
+        if abs(sin_theta) < 1e-10:
+            sin_theta = 1e-10
+
+        # Non-zero Christoffel symbols for Schwarzschild
+        Gamma[0, 0, 1] = Gamma[0, 1, 0] = M / (r * (r - 2*M) + 1e-10)
+        Gamma[1, 0, 0] = M * (r - 2*M) / (r**3 + 1e-10)
+        Gamma[1, 1, 1] = -M / (r * (r - 2*M) + 1e-10)
+        Gamma[1, 2, 2] = -(r - 2*M)
+        Gamma[1, 3, 3] = -(r - 2*M) * sin_theta**2
+        Gamma[2, 1, 2] = Gamma[2, 2, 1] = 1/r
+        Gamma[2, 3, 3] = -sin_theta * cos_theta
+        Gamma[3, 1, 3] = Gamma[3, 3, 1] = 1/r
+        Gamma[3, 2, 3] = Gamma[3, 3, 2] = cos_theta / sin_theta
+
+        return Gamma
+
+    def geodesic_step(self, position: np.ndarray, velocity: np.ndarray, dt: float) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Compute geodesic-corrected position and velocity update.
+
+        Uses first-order symplectic Euler with geodesic equation:
+        dv^μ/dt = -Γ^μ_αβ v^α v^β
+
+        This replaces naive Euclidean motion (position += dt * velocity) with
+        motion that respects spacetime curvature.
+
+        Args:
+            position: Current 4-position (t, r, θ, φ)
+            velocity: Current 4-velocity
+            dt: Time step
+
+        Returns:
+            new_position, new_velocity
+        """
+        # Ensure position is in valid range
+        r = position[1]
+        if r <= self.r_s * 1.01:
+            # Too close to horizon - apply outward push
+            velocity = velocity.copy()
+            velocity[1] = max(velocity[1], 0.1)
+            position = position.copy()
+            position[1] = self.r_s * 1.05
+
+        # Compute Christoffel symbols
+        Gamma = self.compute_christoffel(position)
+
+        # Compute geodesic acceleration: a^μ = -Γ^μ_αβ v^α v^β
+        # With numerical stability clipping
+        acceleration = np.zeros(4)
+        for mu in range(4):
+            for alpha in range(4):
+                for beta in range(4):
+                    term = Gamma[mu, alpha, beta] * velocity[alpha] * velocity[beta]
+                    if np.isfinite(term):
+                        acceleration[mu] -= term
+
+        # Clip acceleration to prevent numerical explosion
+        acceleration = np.clip(acceleration, -10.0, 10.0)
+
+        # Symplectic Euler step
+        new_velocity = velocity + dt * acceleration
+
+        # Clip velocity to physical limits
+        new_velocity = np.clip(new_velocity, -5.0, 5.0)
+
+        new_position = position + dt * new_velocity
+
+        # Handle NaN/Inf - reset to safe values
+        if not np.all(np.isfinite(new_position)):
+            new_position = position.copy()
+            new_position[1] = max(new_position[1], self.r_s * 1.5)
+        if not np.all(np.isfinite(new_velocity)):
+            new_velocity = np.zeros(4)
+            new_velocity[1] = 0.1  # Small outward velocity
+
+        # Boundary conditions
+        # Keep r outside event horizon
+        if new_position[1] <= self.r_s * 1.01:
+            new_position[1] = self.r_s * 1.05
+            new_velocity[1] = abs(new_velocity[1])  # Bounce outward
+
+        # Keep r inside domain
+        if new_position[1] >= self.config.r_max * 0.95:
+            new_position[1] = self.config.r_max * 0.9
+            new_velocity[1] = -abs(new_velocity[1]) * 0.5  # Reflect inward
+
+        # Keep theta in [0, π]
+        new_position[2] = np.clip(new_position[2], 0.01, np.pi - 0.01)
+
+        # Wrap phi to [0, 2π]
+        new_position[3] = new_position[3] % (2 * np.pi)
+
+        return new_position, new_velocity
+
     def add_structural_field(self, position: np.ndarray, strength: float, radius: float):
         """Add beaver structural field with proper boundary handling"""
         i = np.argmin(np.abs(self.r - position[1]))
@@ -418,9 +540,12 @@ class EnhancedBeaverAgent(Agent):
         # Move toward highest curvature
         max_idx = np.argmax(nearby_curvatures)
         self.velocity = 0.8 * self.velocity + 0.2 * directions[max_idx]
-        
-        # Update position
-        self.position += dt * self.velocity
+
+        # Update position using geodesic motion (respects spacetime curvature)
+        # This replaces naive Euclidean: self.position += dt * self.velocity
+        self.position, self.velocity = spacetime.geodesic_step(
+            self.position, self.velocity, dt
+        )
 
         # FIX #2: Energy decay modified by structural field AND edges
         # Moving through structured regions costs less energy
@@ -624,7 +749,13 @@ class EnhancedAntAgent(Agent):
             exploration_bias = spacetime.get_exploration_bias(self.position)
             random_step *= (2.0 - exploration_bias)
 
-            self.position += dt * self.velocity + random_step
+            # Add exploration offset to velocity before geodesic step
+            exploration_velocity = self.velocity + random_step / (dt + 1e-6)
+
+            # Use geodesic motion (respects spacetime curvature)
+            self.position, self.velocity = spacetime.geodesic_step(
+                self.position, exploration_velocity, dt
+            )
 
             # LAYER INTEGRATION: Create structure-linked vertex at high structural field
             if structural_value > 0.3 and np.random.random() < 0.1:
@@ -677,7 +808,11 @@ class EnhancedBeeAgent(Agent):
                 # Graph not mature - wait for structure to develop
                 # Just random walk to reduce energy consumption
                 random_step = 0.02 * np.random.randn(4)
-                self.position += dt * self.velocity + random_step
+                exploration_velocity = self.velocity + random_step / (dt + 1e-6)
+                # Use geodesic motion even while waiting
+                self.position, self.velocity = spacetime.geodesic_step(
+                    self.position, exploration_velocity, dt
+                )
                 self.energy -= dt * 0.003  # Reduced energy cost while waiting
                 return
 
@@ -756,8 +891,10 @@ class EnhancedBeeAgent(Agent):
                 self.target_vertex = None
                 self.role = "scout"
         
-        # Update position
-        self.position += dt * self.velocity
+        # Update position using geodesic motion (respects spacetime curvature)
+        self.position, self.velocity = spacetime.geodesic_step(
+            self.position, self.velocity, dt
+        )
 
         # FIX #2: Energy decay modified by structural field AND edges
         # EDGES REDUCE DECAY: Graph connectivity provides efficiency bonus
@@ -1341,8 +1478,10 @@ class EnhancedSimulationEngine:
         self.logger.info("Initializing agents...")
         self.agents = self._initialize_agents()
         
-        # Wormhole position
-        self.wormhole_position = np.array([0.0, 2.6, np.pi/2, 0.0])
+        # Wormhole position - derived from config instead of hardcoded
+        # Located just outside the wormhole throat at r = throat_radius + 0.6
+        wormhole_r = getattr(config, 'throat_radius', 2.0) + 0.6
+        self.wormhole_position = np.array([0.0, wormhole_r, np.pi/2, 0.0])
         
         # Statistics
         self.stats = {
