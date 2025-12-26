@@ -29,7 +29,7 @@ from blackhole_archive_enhanced import (
 )
 from epistemic_cognitive_layer import (
     EpistemicSemanticGraph,
-    EpistemicAntAgent,
+    # EpistemicAntAgent removed - replaced by CorrectedActiveInferenceAgent
     FreeEnergyComputer,
     Overmind
 )
@@ -64,7 +64,8 @@ from formal_variational_inference import (
 from formal_active_inference_system import (
     SpacetimeStateSpaceModel,
     PositionBelief,
-    StableVariationalInference
+    StableVariationalInference,
+    CorrectedActiveInferenceAgent  # Full active inference with EFE action selection
 )
 
 
@@ -535,7 +536,11 @@ class ProductionSimulationEngine:
                 energy=1.0
             ))
         
-        # Ants: Epistemic with uncertainty
+        # Ants: FORMAL ACTIVE INFERENCE with full EFE action selection
+        # Uses CorrectedActiveInferenceAgent for research-grade cognition:
+        # - ELBO minimization for belief updates
+        # - Expected Free Energy (EFE) for action selection
+        # - Joseph-form covariance updates for numerical stability
         for i in range(self.config.n_ants):
             position = np.array([
                 0.0,
@@ -543,9 +548,11 @@ class ProductionSimulationEngine:
                 np.random.rand() * np.pi,
                 np.random.rand() * 2*np.pi
             ])
-            agents['ants'].append(EpistemicAntAgent(
+            agents['ants'].append(CorrectedActiveInferenceAgent(
                 agent_id=f"ant_{i}",
                 position=position,
+                model=self.spacetime_ssm,  # Shared 4D state-space model
+                vi=self.vi_engine,  # Shared variational inference engine
                 energy=1.0
             ))
         
@@ -584,16 +591,16 @@ class ProductionSimulationEngine:
                     if allocation < 0.33:
                         beaver.energy -= self.config.dt * 0.002 * (0.33 - allocation)
             
-            # UPDATE ANTS (epistemic)
+            # UPDATE ANTS (FORMAL ACTIVE INFERENCE)
+            # CorrectedActiveInferenceAgent implements full active inference loop:
+            # 1. OBSERVE: Sample position with noise
+            # 2. INFER: Kalman filter update (Joseph form for stability)
+            # 3. PLAN: Select action minimizing Expected Free Energy
+            # 4. ACT: Execute action using GEODESIC motion
+            # 5. PREDICT: Update beliefs about future state
             for ant in self.agents['ants']:
                 if ant.state == "active":
-                    ant.update(
-                        self.config.dt,
-                        self.spacetime,
-                        self.epistemic_graph,
-                        self.free_energy_computer,
-                        self.overmind
-                    )
+                    ant.update(self.config.dt, self.spacetime)
             
             # UPDATE BEES (protocol-integrated)
             for bee in self.agents['bees']:
@@ -735,12 +742,16 @@ class ProductionSimulationEngine:
                         F_vals.append(F)
                 self.stats['free_energy'].append(float(np.mean(F_vals)) if F_vals else 0.0)
                 
-                # Information gain
-                ig_vals = []
+                # ELBO and Expected Free Energy from formal active inference ants
+                elbo_vals = []
+                efe_vals = []
                 for ant in self.agents['ants']:
-                    if hasattr(ant, 'information_gain_history') and ant.information_gain_history:
-                        ig_vals.append(ant.information_gain_history[-1])
-                self.stats['information_gain'].append(float(np.mean(ig_vals)) if ig_vals else 0.0)
+                    if hasattr(ant, 'elbo_history') and ant.elbo_history:
+                        elbo_vals.append(ant.elbo_history[-1])
+                    if hasattr(ant, 'efe_history') and ant.efe_history:
+                        efe_vals.append(ant.efe_history[-1])
+                # Use negative ELBO as "information gain" proxy (higher ELBO = more information)
+                self.stats['information_gain'].append(float(np.mean(elbo_vals)) if elbo_vals else 0.0)
                 
                 # Protocol stats
                 total_delivered = sum(b.packets_delivered for b in self.agents['bees'])
