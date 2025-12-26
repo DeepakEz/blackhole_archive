@@ -19,24 +19,81 @@ from formal_state_space import FormalStateSpaceModel, StateSpaceParameters
 class VariationalPosterior:
     """
     Variational posterior q(x) = N(μ, Σ)
-    
-    This is what we optimize in variational inference
+
+    This is what we optimize in variational inference.
+    Includes numerical stability safeguards.
     """
     mean: np.ndarray  # μ [d_state]
     covariance: np.ndarray  # Σ [d_state × d_state]
-    
+
+    # Regularization constant for numerical stability
+    _REGULARIZATION_EPS: float = 1e-6
+
+    def __post_init__(self):
+        """Ensure covariance is valid after initialization."""
+        self._ensure_valid_covariance()
+
+    def _ensure_valid_covariance(self):
+        """
+        Ensure covariance matrix is symmetric positive definite.
+
+        Applies regularization if eigenvalues are too small or negative.
+        """
+        # Enforce symmetry
+        self.covariance = 0.5 * (self.covariance + self.covariance.T)
+
+        # Check eigenvalues
+        eigvals = np.linalg.eigvalsh(self.covariance)
+        min_eigval = np.min(eigvals)
+
+        if min_eigval < self._REGULARIZATION_EPS:
+            # Add regularization to ensure positive definiteness
+            regularization = (self._REGULARIZATION_EPS - min_eigval) * np.eye(len(self.mean))
+            self.covariance = self.covariance + regularization
+
     def entropy(self) -> float:
-        """H[q(x)] = 0.5 * log|2πeΣ|"""
+        """
+        Compute entropy H[q(x)] = 0.5 * log|2πeΣ|
+
+        For a d-dimensional Gaussian: H = 0.5 * d * log(2πe) + 0.5 * log|Σ|
+
+        Returns:
+            Entropy in nats. Returns 0 if covariance is degenerate.
+        """
         d = len(self.mean)
         sign, logdet = np.linalg.slogdet(self.covariance)
+
+        if sign <= 0:
+            # Degenerate covariance - this shouldn't happen after regularization
+            # but handle it gracefully
+            return 0.0
+
         return 0.5 * d * np.log(2 * np.pi * np.e) + 0.5 * logdet
-    
+
     def sample(self, n_samples: int = 1) -> np.ndarray:
-        """Sample from q(x)"""
-        if n_samples == 1:
-            return np.random.multivariate_normal(self.mean, self.covariance)
-        else:
-            return np.random.multivariate_normal(self.mean, self.covariance, size=n_samples)
+        """
+        Sample from q(x) using numerically stable Cholesky decomposition.
+
+        Uses x = μ + L @ z where L = cholesky(Σ) and z ~ N(0, I).
+        Falls back to eigendecomposition if Cholesky fails.
+        """
+        d = len(self.mean)
+
+        try:
+            # Preferred: Cholesky decomposition (faster, more stable)
+            L = np.linalg.cholesky(self.covariance)
+            z = np.random.randn(n_samples, d) if n_samples > 1 else np.random.randn(d)
+            samples = self.mean + (L @ z.T).T if n_samples > 1 else self.mean + L @ z
+        except np.linalg.LinAlgError:
+            # Fallback: eigendecomposition (handles near-singular cases)
+            eigvals, eigvecs = np.linalg.eigh(self.covariance)
+            # Clamp negative eigenvalues
+            eigvals = np.maximum(eigvals, self._REGULARIZATION_EPS)
+            L = eigvecs @ np.diag(np.sqrt(eigvals))
+            z = np.random.randn(n_samples, d) if n_samples > 1 else np.random.randn(d)
+            samples = self.mean + (L @ z.T).T if n_samples > 1 else self.mean + L @ z
+
+        return samples
 
 
 class FormalVariationalInference:
@@ -64,29 +121,52 @@ class FormalVariationalInference:
                           prior: VariationalPosterior,
                           observation: np.ndarray) -> VariationalPosterior:
         """
-        Compute posterior q(x|y) via closed-form variational Bayes
-        
+        Compute posterior q(x|y) via closed-form variational Bayes.
+
         This is the core of variational inference:
         - Prior: q(x) = N(μ_prior, Σ_prior)
         - Likelihood: p(y|x) = N(y; Cx, R)
         - Posterior: q(x|y) = N(μ_post, Σ_post)
-        
+
+        Uses numerically stable matrix operations:
+        - Regularized matrix inversion
+        - Joseph form for covariance update (optional)
+
         Args:
             prior: Prior distribution
             observation: Observed data
-            
+
         Returns:
             Posterior distribution (optimal q*)
         """
-        # Prior precision
-        Σ_prior_inv = inv(prior.covariance)
-        
+        eps = 1e-6  # Regularization constant
+
+        # Regularize prior covariance
+        Σ_prior_reg = prior.covariance + eps * np.eye(self.d_state)
+
+        try:
+            # Prior precision via Cholesky (more stable than direct inverse)
+            L_prior = np.linalg.cholesky(Σ_prior_reg)
+            Σ_prior_inv = np.linalg.solve(L_prior.T, np.linalg.solve(L_prior, np.eye(self.d_state)))
+        except np.linalg.LinAlgError:
+            # Fallback to pseudoinverse
+            Σ_prior_inv = np.linalg.pinv(Σ_prior_reg)
+
         # Posterior precision (information form)
         Σ_post_inv = Σ_prior_inv + self.obs_precision
-        
-        # Posterior covariance
-        Σ_post = inv(Σ_post_inv)
-        
+
+        # Regularize and invert
+        Σ_post_inv_reg = Σ_post_inv + eps * np.eye(self.d_state)
+
+        try:
+            L_post_inv = np.linalg.cholesky(Σ_post_inv_reg)
+            Σ_post = np.linalg.solve(L_post_inv.T, np.linalg.solve(L_post_inv, np.eye(self.d_state)))
+        except np.linalg.LinAlgError:
+            Σ_post = np.linalg.pinv(Σ_post_inv_reg)
+
+        # Ensure symmetry
+        Σ_post = 0.5 * (Σ_post + Σ_post.T)
+
         # Posterior mean
         C = self.model.params.C
         information_vec = (
@@ -94,7 +174,7 @@ class FormalVariationalInference:
             C.T @ self.R_inv @ observation
         )
         μ_post = Σ_post @ information_vec
-        
+
         return VariationalPosterior(mean=μ_post, covariance=Σ_post)
     
     def predict_forward(self,
@@ -248,24 +328,54 @@ class FormalVariationalInference:
                     q: VariationalPosterior,
                     p: VariationalPosterior) -> float:
         """
-        KL divergence KL[q || p] for two Gaussians
-        
-        KL[N(μ₁,Σ₁) || N(μ₂,Σ₂)] = 
+        KL divergence KL[q || p] for two Gaussians.
+
+        KL[N(μ₁,Σ₁) || N(μ₂,Σ₂)] =
             0.5 * [tr(Σ₂^{-1}Σ₁) + (μ₂-μ₁)^T Σ₂^{-1}(μ₂-μ₁) - d + log|Σ₂|/|Σ₁|]
+
+        Uses numerically stable computation with regularization and
+        Cholesky decomposition where possible.
+
+        Returns:
+            KL divergence in nats (always >= 0)
         """
         d = len(q.mean)
-        
-        Σ2_inv = inv(p.covariance)
+        eps = 1e-6
+
+        # Regularize covariances
+        Σ1_reg = q.covariance + eps * np.eye(d)
+        Σ2_reg = p.covariance + eps * np.eye(d)
+
+        # Compute Σ₂⁻¹ using Cholesky
+        try:
+            L2 = np.linalg.cholesky(Σ2_reg)
+            Σ2_inv = np.linalg.solve(L2.T, np.linalg.solve(L2, np.eye(d)))
+        except np.linalg.LinAlgError:
+            Σ2_inv = np.linalg.pinv(Σ2_reg)
+
         diff = p.mean - q.mean
-        
-        trace_term = np.trace(Σ2_inv @ q.covariance)
+
+        # Trace term: tr(Σ₂⁻¹ Σ₁)
+        trace_term = np.trace(Σ2_inv @ Σ1_reg)
+
+        # Quadratic term: (μ₂-μ₁)ᵀ Σ₂⁻¹ (μ₂-μ₁)
         quad_term = diff.T @ Σ2_inv @ diff
-        
-        sign1, logdet1 = np.linalg.slogdet(q.covariance)
-        sign2, logdet2 = np.linalg.slogdet(p.covariance)
-        
-        kl = 0.5 * (trace_term + quad_term - d + logdet2 - logdet1)
-        
+
+        # Log determinant ratio: log|Σ₂| - log|Σ₁|
+        sign1, logdet1 = np.linalg.slogdet(Σ1_reg)
+        sign2, logdet2 = np.linalg.slogdet(Σ2_reg)
+
+        # Handle degenerate cases
+        if sign1 <= 0 or sign2 <= 0:
+            # Covariance is degenerate - return large but finite penalty
+            return 100.0
+
+        logdet_ratio = logdet2 - logdet1
+
+        # Full KL divergence
+        kl = 0.5 * (trace_term + quad_term - d + logdet_ratio)
+
+        # KL is always non-negative (numerical errors can make it slightly negative)
         return max(0.0, float(kl))
 
 

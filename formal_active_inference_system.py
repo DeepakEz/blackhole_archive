@@ -167,28 +167,92 @@ class StableVariationalInference:
         return float(expected_log_lik - kl)
     
     def _kl_divergence(self, q: PositionBelief, p: PositionBelief) -> float:
-        """KL[q||p] for Gaussians"""
+        """
+        KL divergence KL[q||p] for Gaussian distributions.
+
+        KL[N(μ₁,Σ₁) || N(μ₂,Σ₂)] =
+            0.5 * [tr(Σ₂⁻¹Σ₁) + (μ₂-μ₁)ᵀΣ₂⁻¹(μ₂-μ₁) - d + log|Σ₂|/|Σ₁|]
+
+        Handles numerical issues with proper regularization.
+        """
         d = 4
-        
+
+        # Regularize covariance matrices for numerical stability
+        eps = 1e-6
+        Σp_reg = p.covariance + eps * np.eye(d)
+        Σq_reg = q.covariance + eps * np.eye(d)
+
         try:
-            Σp_inv = inv(p.covariance)
+            Σp_inv = inv(Σp_reg)
         except np.linalg.LinAlgError:
-            return 0.0  # Emergency: assume no divergence
-        
+            # Use pseudoinverse as fallback
+            Σp_inv = np.linalg.pinv(Σp_reg)
+            logging.warning("KL divergence: using pseudoinverse for Σp")
+
         diff = p.mean - q.mean
-        
-        trace_term = np.trace(Σp_inv @ q.covariance)
+
+        trace_term = np.trace(Σp_inv @ Σq_reg)
         quad_term = diff.T @ Σp_inv @ diff
-        
-        sign_q, logdet_q = np.linalg.slogdet(q.covariance)
-        sign_p, logdet_p = np.linalg.slogdet(p.covariance)
-        
+
+        sign_q, logdet_q = np.linalg.slogdet(Σq_reg)
+        sign_p, logdet_p = np.linalg.slogdet(Σp_reg)
+
+        # If determinants are non-positive, covariances are degenerate
+        # Return a large but finite value to signal this
         if sign_q <= 0 or sign_p <= 0:
-            return 0.0  # Emergency
-        
+            logging.warning(f"KL divergence: degenerate covariance (sign_q={sign_q}, sign_p={sign_p})")
+            return 10.0  # Large but finite penalty
+
         kl = 0.5 * (trace_term + quad_term - d + logdet_p - logdet_q)
-        
+
+        # KL divergence is always non-negative
         return max(0.0, float(kl))
+
+    def expected_free_energy(self, belief: PositionBelief, action: np.ndarray,
+                             target: Optional[np.ndarray] = None) -> float:
+        """
+        Compute Expected Free Energy (EFE) for action selection.
+
+        G(a) = E_q[F(x', y' | a)]
+
+        EFE decomposes into:
+        - Epistemic value: -E[H[p(y|x)]] (information gain)
+        - Pragmatic value: E[log p(y|C)] (goal achievement)
+
+        For our model with C=I (direct observation):
+        G(a) ≈ entropy_increase + goal_distance
+
+        Args:
+            belief: Current belief state
+            action: Proposed action
+            target: Optional goal position (if None, uses uncertainty reduction)
+
+        Returns:
+            Expected free energy (lower is better)
+        """
+        # Predict next state under this action
+        predicted = self.predict(belief, action)
+
+        # Epistemic term: expected entropy of observation given prediction
+        # Higher uncertainty = higher EFE (we want to reduce uncertainty)
+        epistemic_value = predicted.entropy()
+
+        # Pragmatic term: distance to goal (if specified)
+        if target is not None:
+            goal_distance = np.linalg.norm(predicted.mean - target)
+            pragmatic_value = goal_distance
+        else:
+            # Default: prefer lower radial coordinate (toward information sources)
+            pragmatic_value = predicted.mean[1]  # r coordinate
+
+        # EFE is weighted sum
+        # λ controls exploration-exploitation tradeoff
+        lambda_epistemic = 0.5
+        lambda_pragmatic = 0.5
+
+        efe = lambda_epistemic * epistemic_value + lambda_pragmatic * pragmatic_value
+
+        return float(efe)
 
 
 # =============================================================================
@@ -197,66 +261,146 @@ class StableVariationalInference:
 
 class CorrectedActiveInferenceAgent:
     """
-    Agent with properly integrated active inference
+    Agent with properly integrated active inference.
+
+    Implements the full active inference loop:
+    1. Observe: Get sensory observation
+    2. Infer: Update beliefs via variational inference
+    3. Plan: Select action by minimizing expected free energy
+    4. Act: Execute selected action
+    5. Predict: Update beliefs about future state
     """
-    
-    def __init__(self, agent_id: str, position: np.ndarray, 
+
+    # Action sampling parameters
+    N_ACTION_SAMPLES = 8  # Number of candidate actions to evaluate
+    ACTION_SCALE = 0.15   # Scale of random action perturbations
+
+    def __init__(self, agent_id: str, position: np.ndarray,
                  model: SpacetimeStateSpaceModel, vi: StableVariationalInference,
-                 energy: float = 1.0):
+                 energy: float = 1.0, target: Optional[np.ndarray] = None):
         self.id = agent_id
         self.position = position.copy()
         self.velocity = 0.01 * np.random.randn(4)
         self.energy = energy
         self.state = "active"
-        
+        self.target = target  # Optional goal position
+
         self.model = model
         self.vi = vi
-        
+
         # Belief initialized at current position with moderate uncertainty
         self.belief = PositionBelief(
             mean=position.copy(),
             covariance=0.5 * np.eye(4)
         )
-        
+
         # Statistics
         self.elbo_history = []
         self.entropy_history = []
-    
+        self.efe_history = []
+        self.action_history = []
+
     def observe(self) -> np.ndarray:
         """Get noisy observation of current position"""
         return self.model.sample_observation(self.position)
-    
+
+    def select_action(self) -> np.ndarray:
+        """
+        Select action by minimizing Expected Free Energy (EFE).
+
+        Generates candidate actions and evaluates each one's EFE.
+        Returns the action with lowest expected free energy.
+
+        This implements true active inference action selection:
+        a* = argmin_a G(a)
+
+        where G(a) = E_q[F(x', y' | a)] is the expected free energy.
+        """
+        # Generate candidate actions
+        # Include: current velocity direction, random samples, and zero
+        candidates = []
+
+        # 1. Continue current direction (momentum)
+        if np.linalg.norm(self.velocity) > 1e-6:
+            momentum_action = self.ACTION_SCALE * self.velocity / np.linalg.norm(self.velocity)
+            candidates.append(momentum_action)
+
+        # 2. Random exploration actions
+        for _ in range(self.N_ACTION_SAMPLES - 2):
+            random_action = self.ACTION_SCALE * np.random.randn(4)
+            candidates.append(random_action)
+
+        # 3. Zero action (stay still)
+        candidates.append(np.zeros(4))
+
+        # 4. If we have a target, add action toward it
+        if self.target is not None:
+            direction = self.target - self.belief.mean
+            if np.linalg.norm(direction) > 1e-6:
+                goal_action = self.ACTION_SCALE * direction / np.linalg.norm(direction)
+                candidates.append(goal_action)
+
+        # Evaluate EFE for each candidate
+        efes = []
+        for action in candidates:
+            efe = self.vi.expected_free_energy(self.belief, action, self.target)
+            efes.append(efe)
+
+        # Select action with minimum EFE
+        best_idx = np.argmin(efes)
+        best_action = candidates[best_idx]
+        best_efe = efes[best_idx]
+
+        # Store for analysis
+        self.efe_history.append(best_efe)
+
+        return best_action
+
     def update(self, dt: float):
-        """Update with active inference"""
+        """
+        Update agent state using full active inference loop.
+
+        Steps:
+        1. OBSERVE: Get sensory data
+        2. INFER: Update beliefs via Bayesian inference
+        3. PLAN: Select action minimizing expected free energy
+        4. ACT: Execute the selected action
+        5. PREDICT: Update beliefs about future state
+        """
         if self.state != "active":
             return
-        
+
         # 1. OBSERVE
         y_t = self.observe()
-        
-        # 2. VARIATIONAL UPDATE
+
+        # 2. INFER (variational update)
         prior = self.belief
         self.belief = self.vi.update(prior, y_t)
-        
-        # Compute ELBO
+
+        # Compute metrics
         elbo = self.vi.compute_elbo(self.belief, prior, y_t)
         entropy = self.belief.entropy()
-        
+
         self.elbo_history.append(elbo)
         self.entropy_history.append(entropy)
-        
-        # 3. ACTION SELECTION (simplified: move toward lower uncertainty)
-        # In full active inference, would minimize expected free energy
-        # Here: simple exploration policy
-        action = 0.1 * np.random.randn(4)
-        
-        # 4. EXECUTE
-        self.velocity = 0.9 * self.velocity + 0.1 * action
+
+        # 3. PLAN (action selection via EFE minimization)
+        action = self.select_action()
+        self.action_history.append(action.copy())
+
+        # 4. ACT (execute action with smoothing)
+        # Blend with current velocity for smoother trajectories
+        self.velocity = 0.7 * self.velocity + 0.3 * action
         self.position += dt * self.velocity
-        
-        # 5. PREDICT FORWARD
+
+        # Boundary constraints (stay in valid spacetime region)
+        self.position[1] = max(self.position[1], 3.0)  # Stay outside horizon
+        self.position[2] = np.clip(self.position[2], 0.01, np.pi - 0.01)  # θ ∈ (0, π)
+        self.position[3] = self.position[3] % (2 * np.pi)  # φ ∈ [0, 2π)
+
+        # 5. PREDICT (update beliefs about future)
         self.belief = self.vi.predict(self.belief, action)
-        
+
         # Energy decay
         self.energy -= dt * 0.003
         if self.energy <= 0:

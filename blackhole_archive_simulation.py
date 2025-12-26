@@ -205,8 +205,94 @@ class SchwarzschildMetric:
         
         # Γ^φ_θφ = Γ^φ_φθ
         Gamma[3, 2, 3] = Gamma[3, 3, 2] = np.cos(theta) / np.sin(theta)
-        
+
         return Gamma
+
+    def ricci_scalar(self, r: float, theta: float) -> float:
+        """
+        Compute Ricci scalar R at point (r, theta).
+
+        For Schwarzschild vacuum solution: R = 0 everywhere outside the singularity.
+        This is a fundamental property of vacuum solutions to Einstein's equations:
+        R_μν = 0 implies R = g^μν R_μν = 0.
+
+        Returns:
+            0.0 (Schwarzschild is a vacuum solution)
+        """
+        # Schwarzschild is a vacuum solution: R_μν = 0 → R = 0
+        return 0.0
+
+    def kretschmann_scalar(self, r: float, theta: float) -> float:
+        """
+        Compute Kretschmann scalar K = R_μνρσ R^μνρσ at point (r, theta).
+
+        For Schwarzschild metric: K = 48 M² / r⁶
+
+        This is the proper measure of spacetime curvature for vacuum solutions,
+        as the Ricci scalar vanishes. The Kretschmann scalar measures the
+        strength of tidal forces.
+
+        Physical interpretation:
+        - Diverges at r → 0 (physical singularity)
+        - Decreases as r⁻⁶ (rapid falloff with distance)
+        - At r = r_s: K = 3/(4M⁴) (finite at horizon - horizon is not singular)
+
+        Returns:
+            Kretschmann scalar value (units: 1/length⁴ in geometric units)
+        """
+        if r <= 0:
+            return float('inf')  # Singularity
+        return 48.0 * self.M**2 / r**6
+
+    def tidal_tensor_eigenvalues(self, r: float, theta: float) -> np.ndarray:
+        """
+        Compute eigenvalues of the tidal tensor (Weyl tensor components).
+
+        For Schwarzschild, the tidal tensor has eigenvalues proportional to M/r³.
+        These represent the stretching (radial) and squeezing (angular) forces.
+
+        Physical meaning:
+        - Radial eigenvalue (positive): stretching along radial direction
+        - Angular eigenvalues (negative): compression in angular directions
+
+        Returns:
+            Array of 3 eigenvalues [λ_r, λ_θ, λ_φ] in units of 1/length²
+        """
+        if r <= 0:
+            return np.array([float('inf'), float('-inf'), float('-inf')])
+
+        # Tidal acceleration scales as M/r³
+        tidal_scale = self.M / r**3
+
+        # Eigenvalues: radial stretching = 2M/r³, angular squeezing = -M/r³ each
+        return np.array([2.0 * tidal_scale, -tidal_scale, -tidal_scale])
+
+    def proper_distance(self, r1: float, r2: float) -> float:
+        """
+        Compute proper radial distance between two points.
+
+        For Schwarzschild: ds = dr / sqrt(1 - r_s/r)
+        Integrated: L = ∫[r1,r2] dr / sqrt(1 - r_s/r)
+
+        Uses numerical integration for accuracy.
+
+        Returns:
+            Proper distance in geometric units
+        """
+        from scipy.integrate import quad
+
+        def integrand(r):
+            f = 1 - self.r_s / r
+            if f <= 0:
+                return float('inf')
+            return 1.0 / np.sqrt(f)
+
+        # Ensure we don't integrate through the horizon
+        r_min = max(min(r1, r2), self.r_s * 1.001)
+        r_max = max(r1, r2)
+
+        result, _ = quad(integrand, r_min, r_max)
+        return result
 
 class MorrisThrorneWormhole:
     """
@@ -438,37 +524,81 @@ class FieldEvolver:
     
     def _covariant_laplacian(self, phi: torch.Tensor) -> torch.Tensor:
         """
-        Covariant Laplacian: □φ = g^μν ∇_μ∇_ν φ
+        Covariant Laplacian (d'Alembertian): □φ = g^μν ∇_μ∇_ν φ
+
+        For a scalar field, the covariant Laplacian is:
+        □φ = (1/√|g|) ∂_μ (√|g| g^μν ∂_ν φ)
+
+        This is equivalent to:
+        □φ = g^μν (∂_μ ∂_ν φ - Γ^λ_μν ∂_λ φ)
+
+        For Schwarzschild in coordinates (t, r, θ, φ), the spatial part is:
+        □φ = g^rr ∂²φ/∂r² + g^θθ ∂²φ/∂θ² + g^φφ ∂²φ/∂φ²
+             - g^μν Γ^r_μν ∂φ/∂r - g^μν Γ^θ_μν ∂φ/∂θ - g^μν Γ^φ_μν ∂φ/∂φ
+
+        The connection terms account for the curvature of spacetime.
         """
-        # Finite difference approximation
-        # This is simplified; full implementation requires careful treatment
-        # of connection coefficients
-        
         # Get grid spacing
         dr = self.grid.r[1] - self.grid.r[0]
         dtheta = self.grid.theta[1] - self.grid.theta[0]
-        dphi = self.grid.phi[1] - self.grid.phi[0]
-        
-        # Partial derivatives (central difference)
+        dphi_coord = self.grid.phi[1] - self.grid.phi[0]
+
+        # First derivatives (central difference, 2nd order accurate)
         dphi_dr = (torch.roll(phi, -1, 0) - torch.roll(phi, 1, 0)) / (2 * dr)
         dphi_dtheta = (torch.roll(phi, -1, 1) - torch.roll(phi, 1, 1)) / (2 * dtheta)
-        dphi_dphi = (torch.roll(phi, -1, 2) - torch.roll(phi, 1, 2)) / (2 * dphi)
-        
-        # Second derivatives
+        dphi_dphi_coord = (torch.roll(phi, -1, 2) - torch.roll(phi, 1, 2)) / (2 * dphi_coord)
+
+        # Second derivatives (central difference, 2nd order accurate)
         d2phi_dr2 = (torch.roll(phi, -1, 0) - 2*phi + torch.roll(phi, 1, 0)) / dr**2
         d2phi_dtheta2 = (torch.roll(phi, -1, 1) - 2*phi + torch.roll(phi, 1, 1)) / dtheta**2
-        d2phi_dphi2 = (torch.roll(phi, -1, 2) - 2*phi + torch.roll(phi, 2)) / dphi**2
-        
-        # Combine with inverse metric (diagonal in Schwarzschild)
-        # Full expression includes connection terms
-        g_inv = torch.tensor(self.grid.g_inv, device=self.device)
-        
-        laplacian = (
-            g_inv[..., 1, 1] * d2phi_dr2 +
-            g_inv[..., 2, 2] * d2phi_dtheta2 +
-            g_inv[..., 3, 3] * d2phi_dphi2
+        d2phi_dphi2 = (torch.roll(phi, -1, 2) - 2*phi + torch.roll(phi, 1, 2)) / dphi_coord**2
+
+        # Get precomputed metric quantities
+        g_inv = torch.tensor(self.grid.g_inv, device=self.device, dtype=torch.float32)
+        Gamma = torch.tensor(self.grid.Gamma, device=self.device, dtype=torch.float32)
+
+        # Metric components (diagonal for Schwarzschild)
+        g_rr = g_inv[..., 1, 1]
+        g_thth = g_inv[..., 2, 2]
+        g_phph = g_inv[..., 3, 3]
+
+        # Pure second derivative terms: g^μν ∂_μ ∂_ν φ
+        laplacian_pure = (
+            g_rr * d2phi_dr2 +
+            g_thth * d2phi_dtheta2 +
+            g_phph * d2phi_dphi2
         )
-        
+
+        # Connection coefficient terms: -g^μν Γ^λ_μν ∂_λ φ
+        # For diagonal metric, only diagonal terms contribute
+        # Γ^r contracted: g^rr Γ^r_rr + g^θθ Γ^r_θθ + g^φφ Γ^r_φφ
+        Gamma_r_contracted = (
+            g_rr * Gamma[..., 1, 1, 1] +
+            g_thth * Gamma[..., 1, 2, 2] +
+            g_phph * Gamma[..., 1, 3, 3]
+        )
+
+        # Γ^θ contracted: g^rr Γ^θ_rr + g^θθ Γ^θ_θθ + g^φφ Γ^θ_φφ
+        # Note: Γ^θ_rr = 0 for Schwarzschild
+        Gamma_theta_contracted = (
+            g_thth * Gamma[..., 2, 2, 2] +  # = 0 for Schwarzschild
+            g_phph * Gamma[..., 2, 3, 3]    # = -sin(θ)cos(θ)/r²sin²θ
+        )
+
+        # Γ^φ contracted: all terms are zero for diagonal contributions
+        # (Γ^φ_μμ = 0 for all μ in Schwarzschild)
+        Gamma_phi_contracted = torch.zeros_like(g_rr)
+
+        # Connection correction: -Γ^λ_contracted * ∂_λ φ
+        connection_correction = -(
+            Gamma_r_contracted * dphi_dr +
+            Gamma_theta_contracted * dphi_dtheta +
+            Gamma_phi_contracted * dphi_dphi_coord
+        )
+
+        # Full covariant Laplacian
+        laplacian = laplacian_pure + connection_correction
+
         return laplacian
 
 # =============================================================================
@@ -545,7 +675,6 @@ class HawkingRadiation:
 
 # agents/base.py
 
-from abc import ABC, abstractmethod
 from enum import Enum
 from typing import List, Dict, Any
 import uuid
@@ -559,7 +688,15 @@ class AgentState(Enum):
 
 @dataclass
 class Agent:
-    """Base class for all agents"""
+    """
+    Base class for all agents in the blackhole archive simulation.
+
+    All agents operate in curved spacetime and must implement:
+    - update(): State evolution with physics and decision-making
+    - communicate(): Inter-agent message passing
+
+    Subclasses: BeaverAgent, AntAgent, BeeAgent
+    """
     id: str
     position: np.ndarray  # Spacetime position (t, r, θ, φ)
     velocity: np.ndarray  # 4-velocity
@@ -567,7 +704,7 @@ class Agent:
     energy: float
     colony_id: str
     metadata: Dict[str, Any]
-    
+
     @classmethod
     def create(cls, position: np.ndarray, colony_id: str, **kwargs):
         """Factory method to create agent"""
@@ -581,16 +718,46 @@ class Agent:
             metadata={},
             **kwargs
         )
-    
-    @abstractmethod
+
     def update(self, dt: float, environment: 'Environment'):
-        """Update agent state"""
-        pass
-    
-    @abstractmethod
+        """
+        Update agent state for one timestep.
+
+        This method must be overridden by subclasses to define agent-specific
+        behavior including movement, decision-making, and energy consumption.
+
+        Args:
+            dt: Time step size in simulation units
+            environment: Environment providing physics and graph access
+
+        Raises:
+            NotImplementedError: If not overridden by subclass
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement update(dt, environment)"
+        )
+
     def communicate(self, other_agent: 'Agent') -> Optional['Message']:
-        """Generate message to another agent"""
-        pass
+        """
+        Generate a message to another agent.
+
+        Different agent types communicate different information:
+        - Beavers broadcast structural stability information
+        - Ants share graph structure and pheromone trails
+        - Bees coordinate packet transport routes
+
+        Args:
+            other_agent: The agent to potentially communicate with
+
+        Returns:
+            Message if communication is warranted, None otherwise
+
+        Raises:
+            NotImplementedError: If not overridden by subclass
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement communicate(other_agent)"
+        )
 
 # agents/beavers.py
 
