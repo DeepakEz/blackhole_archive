@@ -336,12 +336,26 @@ class EnhancedBeaverAgent(Agent):
     # Class-level material budget (shared across all beavers)
     global_material_budget = 500.0  # Finite resources
 
+    # Sigmoid cap parameters for productivity scaling
+    SIGMOID_ALPHA = 0.3  # Maximum productivity bonus
+    SIGMOID_K = 2.0  # Steepness of sigmoid curve
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.structures_built = 0
         self.construction_cooldown = 0
 
-    def update(self, dt: float, spacetime: EnhancedSpacetime):
+    @staticmethod
+    def sigmoid_cap(signal: float, alpha: float = 0.3, k: float = 2.0) -> float:
+        """
+        Sigmoid-capped productivity scaling.
+        Formula: base * (1 + α * tanh(k * signal))
+
+        Prevents runaway growth while allowing bounded bonuses.
+        """
+        return 1.0 + alpha * np.tanh(k * signal)
+
+    def update(self, dt: float, spacetime: EnhancedSpacetime, semantic_graph=None):
         # Cooldown
         if self.construction_cooldown > 0:
             self.construction_cooldown -= dt
@@ -354,19 +368,21 @@ class EnhancedBeaverAgent(Agent):
             # FIX #5: Diminishing returns based on local structural density
             local_structure = spacetime.get_structural_field_at(self.position)
 
-            # High existing structure = diminishing returns (strategic, not spam)
-            diminishing_factor = 1.0 / (1.0 + local_structure)
+            # SIGMOID CAP: Use tanh-based diminishing returns instead of 1/(1+x)
+            # This prevents both runaway growth and complete stagnation
+            diminishing_factor = self.sigmoid_cap(-local_structure, self.SIGMOID_ALPHA, self.SIGMOID_K)
+            diminishing_factor = max(0.1, diminishing_factor)  # Floor at 0.1
 
             # Check global material budget
             material_cost = 1.0  # Each build costs 1 unit of material
             if EnhancedBeaverAgent.global_material_budget < material_cost:
                 # No materials left - cannot build
                 pass
-            elif diminishing_factor < 0.1:
+            elif diminishing_factor < 0.15:
                 # Too much structure already - not worth building here
                 pass
             else:
-                # Build structure with diminishing strength
+                # Build structure with sigmoid-capped strength
                 build_strength = 2.0 * diminishing_factor
                 spacetime.add_structural_field(self.position, build_strength, 3.0)
                 self.structures_built += 1
@@ -374,12 +390,10 @@ class EnhancedBeaverAgent(Agent):
                 # Consume global materials
                 EnhancedBeaverAgent.global_material_budget -= material_cost
 
-                # Energy economics with diminishing returns
+                # ENERGY FIX: Construction costs energy, no direct reward
+                # Edges reduce decay, NOT create energy (handled in decay calculation)
                 construction_cost = 0.02
-                energy_reward = 0.05 * diminishing_factor  # Less reward in saturated areas
-
                 self.energy -= construction_cost
-                self.energy += energy_reward
 
                 # Cooldown scales with local density (harder to build in crowded areas)
                 self.construction_cooldown = 1.0 + 0.5 * local_structure
@@ -403,10 +417,21 @@ class EnhancedBeaverAgent(Agent):
         # Update position
         self.position += dt * self.velocity
 
-        # FIX #2: Energy decay modified by structural field
+        # FIX #2: Energy decay modified by structural field AND edges
         # Moving through structured regions costs less energy
+        # EDGES REDUCE DECAY: Graph connectivity provides efficiency bonus
         movement_cost = spacetime.get_movement_cost(self.position)
-        self.energy -= dt * 0.005 * movement_cost
+        base_decay = dt * 0.005 * movement_cost
+
+        # Edge-based decay reduction: more edges = less decay
+        edge_reduction = 1.0
+        if semantic_graph is not None:
+            n_edges = semantic_graph.graph.number_of_edges()
+            # Sigmoid cap on edge benefit: edges reduce decay, NOT create energy
+            # Formula: decay_multiplier = 1 / (1 + α * tanh(edges / scale))
+            edge_reduction = 1.0 / (1.0 + 0.3 * np.tanh(n_edges / 20.0))
+
+        self.energy -= base_decay * edge_reduction
 
         if self.energy <= 0:
             self.state = "dead"
@@ -501,29 +526,46 @@ class EnhancedAntAgent(Agent):
             if self.current_vertex in semantic_graph.graph:
                 semantic_graph.graph.nodes[self.current_vertex]['last_accessed'] = current_time
 
-            # EDGE POLICY 1: Temporal adjacency - connect sequential discoveries
+            # Record activation for co-occurrence tracking
+            semantic_graph.record_activation(self.current_vertex, current_time, self.id)
+
+            # Count nearby structures for structure-dependent edge probability
+            nearby_structures = len(self._find_all_nearby_vertices(semantic_graph, distance_threshold=3.0))
+
+            # CONDITIONAL EDGE POLICY 1: Temporal adjacency - connect sequential discoveries
+            # Now requires co-activation, not just adjacency
             if len(self.path_history) > 1:
                 prev_vertex = self.path_history[-2]
                 if prev_vertex in semantic_graph.graph and self.current_vertex in semantic_graph.graph:
-                    # Add BIDIRECTIONAL edges for proper DiGraph navigation
-                    semantic_graph.add_edge(prev_vertex, self.current_vertex, pheromone=1.0)
-                    semantic_graph.add_edge(self.current_vertex, prev_vertex, pheromone=1.0)
-                    self.pheromone_deposits += 2
+                    # Use conditional edge formation (requires co-occurrence)
+                    # First ensure both vertices have activation records
+                    semantic_graph.record_activation(prev_vertex, current_time - 0.1, self.id)
+                    if semantic_graph.add_edge_conditional(prev_vertex, self.current_vertex, 1.0,
+                                                           current_time, nearby_structures):
+                        semantic_graph.add_edge(self.current_vertex, prev_vertex, pheromone=1.0)
+                        self.pheromone_deposits += 2
 
-            # EDGE POLICY 2: Co-occurrence - connect vertices discovered close in time
+            # CONDITIONAL EDGE POLICY 2: Co-occurrence - connect vertices discovered close in time
+            # Only creates edges if co-occurrence count > 0 (temporal overlap requirement)
             recent_discoveries = [v for v, t in self.discovery_times.items()
                                   if current_time - t < 5.0 and v != self.current_vertex
                                   and v in semantic_graph.graph]
             for other_vertex in recent_discoveries[-3:]:  # Limit to 3 most recent
                 if not semantic_graph.graph.has_edge(self.current_vertex, other_vertex):
-                    semantic_graph.add_edge(self.current_vertex, other_vertex, pheromone=0.5)
-                    semantic_graph.add_edge(other_vertex, self.current_vertex, pheromone=0.5)
+                    # Conditional edge - requires co-occurrence
+                    if semantic_graph.add_edge_conditional(self.current_vertex, other_vertex, 0.5,
+                                                           current_time, nearby_structures):
+                        semantic_graph.add_edge(other_vertex, self.current_vertex, pheromone=0.5)
 
-            # EDGE POLICY 3: Spatial proximity - connect to nearby vertices
+            # CONDITIONAL EDGE POLICY 3: Spatial proximity - connect to nearby vertices
+            # Structure-dependent probability: 0.05 + 0.05 * nearby_structures
             for nearby_v in self._find_all_nearby_vertices(semantic_graph, distance_threshold=3.0):
                 if nearby_v != self.current_vertex and not semantic_graph.graph.has_edge(self.current_vertex, nearby_v):
-                    semantic_graph.add_edge(self.current_vertex, nearby_v, pheromone=0.3)
-                    semantic_graph.add_edge(nearby_v, self.current_vertex, pheromone=0.3)
+                    # Record activation for nearby vertex to enable co-occurrence
+                    semantic_graph.record_activation(nearby_v, current_time, self.id)
+                    if semantic_graph.add_edge_conditional(self.current_vertex, nearby_v, 0.3,
+                                                           current_time, nearby_structures):
+                        semantic_graph.add_edge(nearby_v, self.current_vertex, pheromone=0.3)
 
             # Choose next vertex - FIX: Use both successors and predecessors for DiGraph
             successors = set(semantic_graph.graph.successors(self.current_vertex))
@@ -595,9 +637,15 @@ class EnhancedAntAgent(Agent):
                     self.path_history.append(vertex_id)
                     self.discovery_times[vertex_id] = current_time
 
-        # FIX #2: Energy decay modified by structural field
+        # FIX #2: Energy decay modified by structural field AND edges
+        # EDGES REDUCE DECAY: Graph connectivity provides efficiency bonus
         movement_cost = spacetime.get_movement_cost(self.position)
-        self.energy -= dt * 0.003 * movement_cost
+        base_decay = dt * 0.003 * movement_cost
+
+        # Edge-based decay reduction
+        n_edges = semantic_graph.graph.number_of_edges()
+        edge_reduction = 1.0 / (1.0 + 0.3 * np.tanh(n_edges / 20.0))
+        self.energy -= base_decay * edge_reduction
 
         if self.energy <= 0:
             self.state = "dead"
@@ -617,6 +665,16 @@ class EnhancedBeeAgent(Agent):
 
     def update(self, dt: float, spacetime: EnhancedSpacetime, semantic_graph, wormhole_position):
         if self.role == "scout":
+            # TRANSPORT GATING: Check if semantic graph is mature enough for transport
+            # Requires: 3+ vertices, 2+ edges, entropy > 0.3
+            if not semantic_graph.is_transport_ready():
+                # Graph not mature - wait for structure to develop
+                # Just random walk to reduce energy consumption
+                random_step = 0.02 * np.random.randn(4)
+                self.position += dt * self.velocity + random_step
+                self.energy -= dt * 0.003  # Reduced energy cost while waiting
+                return
+
             # FIX #3: Find vertices with packets waiting (not just high salience)
             if np.random.rand() < 0.1:  # Check more frequently
                 vertices = list(semantic_graph.graph.nodes())
@@ -689,10 +747,15 @@ class EnhancedBeeAgent(Agent):
         # Update position
         self.position += dt * self.velocity
 
-        # FIX #2: Energy decay modified by structural field
-        # Structural field reduces movement cost for bees too
+        # FIX #2: Energy decay modified by structural field AND edges
+        # EDGES REDUCE DECAY: Graph connectivity provides efficiency bonus
         movement_cost = spacetime.get_movement_cost(self.position)
-        self.energy -= dt * 0.008 * movement_cost * (1 + 0.5 * bool(self.packet))
+        base_decay = dt * 0.008 * movement_cost * (1 + 0.5 * bool(self.packet))
+
+        # Edge-based decay reduction
+        n_edges = semantic_graph.graph.number_of_edges()
+        edge_reduction = 1.0 / (1.0 + 0.3 * np.tanh(n_edges / 20.0))
+        self.energy -= base_decay * edge_reduction
 
         if self.energy <= 0:
             self.state = "dead"
@@ -704,6 +767,12 @@ class EnhancedBeeAgent(Agent):
 class SemanticGraph:
     """Semantic graph maintained by ants with packet economy"""
 
+    # Class-level constants for emergence control
+    MAX_VERTICES = 100
+    PHASE_1_MATURITY_EDGES = 2
+    PHASE_2_MATURITY_EDGES = 5
+    MIN_ENTROPY_FOR_TRANSPORT = 0.3
+
     def __init__(self):
         self.graph = nx.DiGraph()
         self.pheromones = {}  # (v1, v2) -> strength
@@ -711,15 +780,31 @@ class SemanticGraph:
         # FIX #3: Packet queues at vertices
         self.packet_queues = {}  # vertex_id -> list of packets
         self.max_queue_size = 10  # FIX #4: Queue capacity limit
+        # Co-occurrence tracking for conditional edge formation
+        self.vertex_activations = {}  # vertex_id -> list of (time, agent_id)
+        self.co_occurrence_counts = {}  # (v1, v2) -> count
 
     def add_vertex(self, position: np.ndarray, salience: float) -> int:
-        """Add vertex to graph"""
+        """Add vertex to graph with max vertex limit"""
+        # Enforce maximum vertices
+        if self.graph.number_of_nodes() >= self.MAX_VERTICES:
+            # Find lowest salience vertex to replace
+            min_sal_vertex = min(self.graph.nodes(),
+                                  key=lambda v: self.graph.nodes[v].get('salience', 0))
+            if self.graph.nodes[min_sal_vertex].get('salience', 0) < salience:
+                self.graph.remove_node(min_sal_vertex)
+                if min_sal_vertex in self.packet_queues:
+                    del self.packet_queues[min_sal_vertex]
+            else:
+                return -1  # Reject new vertex
+
         vertex_id = self.next_vertex_id
         self.next_vertex_id += 1
 
         self.graph.add_node(vertex_id, position=position, salience=salience,
                            created_at=0.0, last_accessed=0.0)
         self.packet_queues[vertex_id] = []  # Initialize packet queue
+        self.vertex_activations[vertex_id] = []
         return vertex_id
 
     def add_packet(self, vertex_id: int, packet: dict) -> bool:
@@ -878,6 +963,160 @@ class SemanticGraph:
     def get_total_queue_length(self) -> int:
         """Get total packets waiting across all vertices"""
         return sum(len(q) for q in self.packet_queues.values())
+
+    # =========================================================================
+    # CONDITIONAL EDGE FORMATION (Co-activation based)
+    # =========================================================================
+
+    def record_activation(self, vertex_id: int, time: float, agent_id: int):
+        """
+        Record vertex activation for co-occurrence tracking.
+        Edges require temporal overlap, not just absolute salience.
+        """
+        if vertex_id not in self.vertex_activations:
+            self.vertex_activations[vertex_id] = []
+
+        # Keep only recent activations (rolling window)
+        activation_window = 10.0  # Time window for co-occurrence
+        self.vertex_activations[vertex_id] = [
+            (t, a) for t, a in self.vertex_activations[vertex_id]
+            if time - t < activation_window
+        ]
+        self.vertex_activations[vertex_id].append((time, agent_id))
+
+    def compute_co_occurrence(self, v1: int, v2: int, current_time: float,
+                               time_window: float = 5.0) -> int:
+        """
+        Compute co-occurrence count between two vertices.
+        Returns number of times both were activated within time_window.
+        """
+        if v1 not in self.vertex_activations or v2 not in self.vertex_activations:
+            return 0
+
+        activations1 = self.vertex_activations[v1]
+        activations2 = self.vertex_activations[v2]
+
+        co_occurrences = 0
+        for t1, _ in activations1:
+            for t2, _ in activations2:
+                if abs(t1 - t2) < time_window:
+                    co_occurrences += 1
+
+        return co_occurrences
+
+    def add_edge_conditional(self, v1: int, v2: int, pheromone: float,
+                              current_time: float, nearby_structures: int = 0) -> bool:
+        """
+        Conditional edge formation based on co-activation.
+
+        Edge probability formula:
+            edge_prob = min(salience1, salience2) × co_occurrence_count × structure_bonus
+
+        No edge without temporal overlap or shared packet reference.
+        Structure bonus: 0.05 + 0.05 × nearby_structures
+        """
+        if v1 not in self.graph or v2 not in self.graph:
+            return False
+
+        # Get saliences
+        sal1 = self.graph.nodes[v1].get('salience', 0.5)
+        sal2 = self.graph.nodes[v2].get('salience', 0.5)
+        min_salience = min(sal1, sal2)
+
+        # Require co-occurrence (temporal overlap)
+        co_occurrence = self.compute_co_occurrence(v1, v2, current_time)
+        if co_occurrence == 0:
+            return False  # No edge without temporal overlap
+
+        # Structure-dependent base probability
+        base_prob = 0.05 + 0.05 * nearby_structures
+
+        # Final edge probability
+        edge_prob = min_salience * (1 + 0.1 * co_occurrence) * base_prob
+
+        if np.random.random() < edge_prob:
+            self.add_edge(v1, v2, pheromone)
+            # Track co-occurrence for this pair
+            pair = (min(v1, v2), max(v1, v2))
+            self.co_occurrence_counts[pair] = self.co_occurrence_counts.get(pair, 0) + 1
+            return True
+
+        return False
+
+    # =========================================================================
+    # ENTROPY AND TRANSPORT GATING
+    # =========================================================================
+
+    def compute_entropy(self) -> float:
+        """
+        Compute graph entropy for transport gating.
+        Higher entropy = more uniform structure = ready for transport.
+
+        Uses degree distribution entropy:
+            H = -Σ p(k) log(p(k))
+        where p(k) is probability of degree k.
+        """
+        if self.graph.number_of_nodes() == 0:
+            return 0.0
+
+        # Get degree sequence
+        degrees = [d for _, d in self.graph.degree()]
+        if not degrees:
+            return 0.0
+
+        # Count degree frequencies
+        degree_counts = {}
+        for d in degrees:
+            degree_counts[d] = degree_counts.get(d, 0) + 1
+
+        # Compute probability distribution
+        n = len(degrees)
+        probabilities = [count / n for count in degree_counts.values()]
+
+        # Compute Shannon entropy
+        entropy = 0.0
+        for p in probabilities:
+            if p > 0:
+                entropy -= p * np.log(p + 1e-10)
+
+        # Normalize to [0, 1] range (max entropy is log(n))
+        max_entropy = np.log(n + 1)
+        return entropy / max_entropy if max_entropy > 0 else 0.0
+
+    def is_transport_ready(self) -> bool:
+        """
+        Check if semantic graph is mature enough for transport.
+
+        Requirements:
+        - At least 3 vertices
+        - At least 2 edges (PHASE_1_MATURITY_EDGES)
+        - Graph entropy > MIN_ENTROPY_FOR_TRANSPORT
+        """
+        n_vertices = self.graph.number_of_nodes()
+        n_edges = self.graph.number_of_edges()
+        entropy = self.compute_entropy()
+
+        return (n_vertices >= 3 and
+                n_edges >= self.PHASE_1_MATURITY_EDGES and
+                entropy >= self.MIN_ENTROPY_FOR_TRANSPORT)
+
+    def get_graph_maturity_phase(self) -> int:
+        """
+        Get current graph maturity phase.
+
+        Phase 0: Immature (< 3 vertices or < 2 edges)
+        Phase 1: Basic transport enabled (2+ edges, entropy > 0.3)
+        Phase 2: Full transport (5+ edges)
+        """
+        n_edges = self.graph.number_of_edges()
+
+        if not self.is_transport_ready():
+            return 0
+
+        if n_edges >= self.PHASE_2_MATURITY_EDGES:
+            return 2
+
+        return 1
 
 # =============================================================================
 # ENHANCED SIMULATION ENGINE
@@ -1052,7 +1291,7 @@ class EnhancedSimulationEngine:
             # Update all agents
             for beaver in self.agents['beavers']:
                 if beaver.state == "active":
-                    beaver.update(self.config.dt, self.spacetime)
+                    beaver.update(self.config.dt, self.spacetime, self.semantic_graph)
 
             for ant in self.agents['ants']:
                 if ant.state == "active":
