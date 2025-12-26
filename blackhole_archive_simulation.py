@@ -613,11 +613,13 @@ class BeaverAgent(Agent):
     structural_field: float = 1.0  # σ_B value at agent location
     construction_sites: List[np.ndarray] = field(default_factory=list)
     dam_strength: float = 1.0
-    
+    local_curvature: float = 0.0  # Cached curvature for stability computation
+
     def update(self, dt: float, environment: 'Environment'):
         """Update beaver behavior"""
-        # Check local curvature
+        # Check local curvature and cache it for stability computation
         curvature = environment.get_curvature(self.position)
+        self.local_curvature = curvature
         
         # If curvature is too high (unstable), build structure
         if curvature > environment.config.stability_threshold:
@@ -680,9 +682,26 @@ class BeaverAgent(Agent):
         return None
     
     def _compute_local_stability(self) -> float:
-        """Compute stability metric at current location"""
-        # Placeholder: would integrate local curvature, field strength, etc.
-        return min(1.0, self.structural_field / self.dam_strength)
+        """
+        Compute stability metric at current location.
+
+        Stability depends on:
+        - Structural field strength relative to dam strength
+        - Local spacetime curvature (high curvature = less stable)
+
+        Returns value in [0, 1] where 1 = perfectly stable.
+        """
+        # Base stability from structural field
+        field_stability = min(1.0, self.structural_field / self.dam_strength)
+
+        # Curvature penalty: high curvature reduces stability
+        # Use sigmoid to smoothly reduce stability as curvature increases
+        curvature_penalty = 1.0 / (1.0 + self.local_curvature)
+
+        # Combined stability metric
+        stability = field_stability * curvature_penalty
+
+        return max(0.0, min(1.0, stability))
 
 # agents/ants.py
 
@@ -908,7 +927,7 @@ class BeeAgent(Agent):
         direction = wormhole_position - self.position
         self.velocity[1:] = 0.5 * direction[1:] / (np.linalg.norm(direction[1:]) + 1e-6)
     
-    def communicate(self, other_agent: Agent) -> Optional['Message']:
+    def communicate(self, other_agent: Agent, environment: 'Environment' = None) -> Optional['Message']:
         """Bees perform waggle dance to communicate"""
         if isinstance(other_agent, BeeAgent) and self.role == "scout" and self.waggle_intensity > 0:
             return Message(
@@ -918,25 +937,84 @@ class BeeAgent(Agent):
                 content={
                     "target_vertex": self.target_vertex,
                     "intensity": self.waggle_intensity,
-                    "direction": self._encode_direction(),
-                    "distance": self._encode_distance()
+                    "direction": self._encode_direction(environment),
+                    "distance": self._encode_distance(environment)
                 }
             )
         return None
     
-    def _encode_direction(self) -> float:
-        """Encode direction to target as angle"""
-        if self.target_vertex is None:
+    def _encode_direction(self, environment: 'Environment' = None) -> float:
+        """
+        Encode direction to target as angle relative to local frame.
+
+        Uses spherical coordinates (theta, phi) to compute direction angle.
+        Returns angle in radians [0, 2π] relative to current heading.
+        """
+        if self.target_vertex is None or environment is None:
             return 0.0
-        # Placeholder: would compute angle relative to local frame
-        return 0.0
-    
-    def _encode_distance(self) -> float:
-        """Encode distance to target as waggle duration"""
-        if self.target_vertex is None:
+
+        # Get target vertex position from semantic graph
+        if not hasattr(environment, 'semantic_graph'):
             return 0.0
-        # Placeholder: would compute proper distance
+
+        target_pos = environment.semantic_graph.get_vertex_position(self.target_vertex)
+        if target_pos is None:
+            return 0.0
+
+        # Compute direction vector in spatial coordinates (r, theta, phi)
+        # Position format: [t, r, theta, phi]
+        direction = target_pos[1:] - self.position[1:]
+
+        # Compute angle in local tangent space
+        # Use atan2 for proper quadrant handling
+        if len(direction) >= 2:
+            # Project onto theta-phi plane for direction encoding
+            angle = np.arctan2(direction[2] if len(direction) > 2 else 0.0,
+                              direction[1] if len(direction) > 1 else 1.0)
+            # Normalize to [0, 2π]
+            return (angle + 2 * np.pi) % (2 * np.pi)
+
         return 0.0
+
+    def _encode_distance(self, environment: 'Environment' = None) -> float:
+        """
+        Encode distance to target as waggle duration.
+
+        Computes proper distance accounting for curved spacetime.
+        Returns duration in time units proportional to distance.
+        """
+        if self.target_vertex is None or environment is None:
+            return 0.0
+
+        # Get target vertex position from semantic graph
+        if not hasattr(environment, 'semantic_graph'):
+            return 0.0
+
+        target_pos = environment.semantic_graph.get_vertex_position(self.target_vertex)
+        if target_pos is None:
+            return 0.0
+
+        # Compute coordinate distance
+        coord_distance = np.linalg.norm(target_pos[1:] - self.position[1:])
+
+        # Compute proper distance using metric if available
+        if hasattr(environment, 'metric') and environment.metric is not None:
+            metric = environment.metric
+            r = self.position[1] if len(self.position) > 1 else 1.0
+            theta = self.position[2] if len(self.position) > 2 else np.pi / 2
+
+            # Get metric tensor at current position
+            g = metric.metric_tensor(max(r, metric.r_s * 1.01), theta)
+
+            # Approximate proper distance using g_rr component
+            # ds² = g_rr dr² for radial motion
+            proper_distance = coord_distance * np.sqrt(abs(g[1, 1]))
+        else:
+            proper_distance = coord_distance
+
+        # Waggle duration proportional to distance (scaling factor for dance)
+        waggle_scale = 0.1  # Time units per distance unit
+        return proper_distance * waggle_scale
 
 # This is just the beginning - there's much more to implement!
 # Next sections would include:
