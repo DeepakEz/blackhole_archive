@@ -902,7 +902,7 @@ class MycoBeaverEnv(gym.Env):
         self.structure_physics = StructurePhysicsEngine(config.grid)
         self.task_allocation = TaskAllocationSystem(config.grid)
 
-        # Placeholders for subsystems (initialized in reset)
+        # Subsystems initialized in reset() method
         self.pheromone_field = None
         self.project_manager = None
         self.physarum_network = None
