@@ -24,7 +24,8 @@ from blackhole_archive_main import SimulationConfig
 from blackhole_archive_enhanced import (
     EnhancedSpacetime,
     EnhancedBeaverAgent,
-    SemanticGraph
+    SemanticGraph,
+    ActiveInferenceMixin  # Import for active inference integration
 )
 from epistemic_cognitive_layer import (
     EpistemicSemanticGraph,
@@ -53,14 +54,20 @@ from epistemic_enhancements import (
 # PROTOCOL-INTEGRATED BEE AGENT
 # =============================================================================
 
-class ProductionBeeAgent:
+class ProductionBeeAgent(ActiveInferenceMixin):
     """
-    Bee with full protocol integration and holographic bound enforcement.
+    Bee with full protocol integration, holographic bound enforcement,
+    geodesic physics, and Active Inference for action selection.
 
-    FIX: Now properly uses packet queue system instead of fabricating packets.
+    FIXES:
+    - Uses geodesic motion (not Euclidean)
+    - Uses PacketValueComputer for value-based routing (V = ΔF - λC)
+    - Preserves packet provenance (uses original packet_id)
+    - Active Inference for belief updating and action selection
     """
 
-    def __init__(self, agent_id: str, position: np.ndarray, energy: float = 1.0):
+    def __init__(self, agent_id: str, position: np.ndarray, energy: float = 1.0,
+                 packet_value_computer=None):
         self.id = agent_id
         self.position = position.copy()
         self.velocity = 0.2 * np.random.randn(len(position))
@@ -75,9 +82,34 @@ class ProductionBeeAgent:
         self.congestion_backoff = 0.0
         self.congestion_count = 0
 
+        # Packet value computer for V = ΔF - λC routing
+        self.packet_value_computer = packet_value_computer
+
+        # Initialize Active Inference
+        self.__init_active_inference__()
+        self.preferences[2] = 1.0  # Prefer high info density
+        self.preferences[4] = 0.5  # Prefer structural regions
+        self.epistemic_drive = 0.7
+
     def update(self, dt, spacetime, semantic_graph, wormhole_position, transport_protocol):
         if self.state != "active":
             return
+
+        # ACTIVE INFERENCE: Update beliefs based on current observation
+        observation = self._get_observation(spacetime, self.position)
+        self.update_beliefs(observation)
+
+        # Track free energy for adaptive behavior
+        current_F = self.compute_free_energy(observation)
+        self.free_energy_history.append(current_F)
+
+        # Adapt epistemic drive based on surprise
+        if len(self.free_energy_history) > 10:
+            recent_F = np.mean(self.free_energy_history[-10:])
+            if recent_F > 1.0:
+                self.epistemic_drive = min(0.9, self.epistemic_drive + 0.01)
+            else:
+                self.epistemic_drive = max(0.3, self.epistemic_drive - 0.01)
 
         # Handle congestion backoff
         if self.congestion_backoff > 0:
@@ -86,22 +118,38 @@ class ProductionBeeAgent:
                 self.role = "scout"
             return
 
-        # Scout for packets - FIX: Look for vertices with queued packets
+        # Scout for packets using value-based routing
         if self.role == "scout":
-            # FIX: Increased probability from 0.05 to 0.15 for more responsive scouting
             if np.random.rand() < 0.15 and len(semantic_graph.graph.nodes) > 0:
                 vertices = list(semantic_graph.graph.nodes)
 
-                # FIX: Score vertices by queue_length * salience + baseline salience
-                # This prioritizes vertices with actual packets waiting
+                # USE PacketValueComputer for V = ΔF - λC scoring
                 scores = []
                 for v in vertices:
                     queue_len = semantic_graph.get_queue_length(v)
-                    salience = semantic_graph.graph.nodes[v].get('salience', 0.5)
-                    # Score = queue_length * salience + small baseline for exploration
-                    scores.append(queue_len * salience + 0.1 * salience)
+                    if queue_len == 0:
+                        scores.append(0.0)
+                        continue
 
-                # FIX: Lower threshold from 0.7 to 0.0 - accept any vertex with packets
+                    vertex_data = semantic_graph.graph.nodes[v]
+                    salience = vertex_data.get('salience', 0.5)
+
+                    if self.packet_value_computer is not None:
+                        # Use proper free energy value computation
+                        # V = ΔF - λC where ΔF is information gain, C is transport cost
+                        try:
+                            value = self.packet_value_computer.compute_value(
+                                semantic_graph, v, self.position
+                            )
+                        except Exception:
+                            # Fallback if compute fails
+                            value = queue_len * salience
+                    else:
+                        # Fallback: simple heuristic if no computer available
+                        value = queue_len * salience + 0.1 * salience
+
+                    scores.append(value)
+
                 if max(scores) > 0:
                     best_idx = np.argmax(scores)
                     best_vertex = vertices[best_idx]
@@ -139,6 +187,12 @@ class ProductionBeeAgent:
 
                 if queued_packet is not None:
                     # Got a packet from queue - convert to protocol Packet
+                    # PROVENANCE FIX: Preserve original packet_id from creation
+                    original_packet_id = queued_packet.get('packet_id')
+                    if original_packet_id is None:
+                        # Generate ID only if original doesn't exist (legacy compatibility)
+                        original_packet_id = f"pkt_{queued_packet.get('created_at', 0.0)}_{self.target_vertex}"
+
                     vertex_mean = vertex_data.get('mean', np.random.randn(16))
                     if isinstance(vertex_mean, np.ndarray):
                         payload_bytes = vertex_mean.tobytes()
@@ -161,13 +215,18 @@ class ProductionBeeAgent:
                         checksum=hex(hash(payload_bytes) & 0xFFFFFFFF)
                     )
 
-                    # Initialize causal certificate
+                    # Initialize causal certificate - PRESERVE original provenance
                     causal_cert = CausalCertificate()
+                    # Add original creator if known
+                    original_creator = queued_packet.get('source_agent')
+                    if original_creator:
+                        causal_cert.increment(original_creator)
+                    # Add this bee as transporter
                     causal_cert.increment(self.id)
 
-                    # Build protocol-compliant packet from queue data
+                    # Build protocol-compliant packet preserving original ID
                     self.current_packet = Packet(
-                        packet_id=f"{self.id}_{self.packets_delivered}_{self.target_vertex}",
+                        packet_id=original_packet_id,  # PROVENANCE: Use original ID
                         packet_type=PacketType.DATA,
                         data=payload_bytes,
                         semantic_coord=semantic_coord,
@@ -212,8 +271,11 @@ class ProductionBeeAgent:
                     self.congestion_backoff = 0.5 * (2 ** min(self.congestion_count, 5))
                     self.role = "congestion_wait"
 
-        # Update position
-        self.position += dt * self.velocity
+        # Update position using GEODESIC motion (not Euclidean!)
+        # This respects the curved spacetime geometry
+        self.position, self.velocity = spacetime.geodesic_step(
+            self.position, self.velocity, dt
+        )
         self.energy -= dt * 0.004
 
         if self.energy <= 0:
@@ -379,7 +441,7 @@ class ProductionSimulationEngine:
                 energy=1.0
             ))
         
-        # Bees: Protocol-integrated
+        # Bees: Protocol-integrated with PacketValueComputer
         for i in range(self.config.n_bees):
             position = np.array([
                 0.0,
@@ -390,7 +452,8 @@ class ProductionSimulationEngine:
             agents['bees'].append(ProductionBeeAgent(
                 agent_id=f"bee_{i}",
                 position=position,
-                energy=1.0
+                energy=1.0,
+                packet_value_computer=self.packet_value_computer  # V = ΔF - λC routing
             ))
         
         return agents
