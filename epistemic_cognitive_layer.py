@@ -882,10 +882,17 @@ class EpistemicAntAgent:
         else:
             # Random exploration
             self.velocity += 0.05 * np.random.randn(len(self.position))
-        
-        # Update position
-        self.position += dt * self.velocity
-        
+
+        # Update position using GEODESIC motion (respects curved spacetime)
+        # NOT Euclidean: self.position += dt * self.velocity  # WRONG - ignores curvature
+        if hasattr(spacetime, 'geodesic_step'):
+            self.position, self.velocity = spacetime.geodesic_step(
+                self.position, self.velocity, dt
+            )
+        else:
+            # Fallback for spacetimes without geodesic integration
+            self.position += dt * self.velocity
+
         # Energy decay (modulated by Overmind)
         base_decay = 0.003
         allocation = overmind.get_energy_allocation('ants')
