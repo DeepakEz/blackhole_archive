@@ -251,39 +251,139 @@ class EpistemicSemanticGraph:
 
     def detect_contradictions(self, threshold: float = 2.0, max_pairs: int = 1000):
         """
-        Find beliefs that contradict each other
-        
+        Find beliefs that contradict each other.
+
         Two beliefs contradict if:
         ||μ₁ - μ₂|| > threshold * √(tr(Σ₁) + tr(Σ₂))
-        
-        OPTIMIZED: For large graphs, sample pairs instead of O(N²)
+
+        Detection Strategy:
+        -------------------
+        For small graphs (n² < max_pairs): Exhaustive O(n²) search
+        For large graphs: Multi-strategy approach:
+          1. Graph-based: Check all edges and 2-hop neighbors (likely conflicts)
+          2. Embedding-based: Group by embedding similarity, check within groups
+          3. Random sampling: Fill remaining budget with random pairs
+
+        This ensures we catch semantically related contradictions while
+        staying within computational budget. The graph-based approach
+        prioritizes checking beliefs that are semantically close (more
+        likely to have meaningful contradictions).
         """
+        import random
+
         # CRITICAL: Clear old contradictions first
         for b in self.beliefs.values():
             b.contradicted_by.clear()
         self.contradiction_pairs.clear()
-        
+
         vertices = list(self.beliefs.keys())
         n = len(vertices)
-        
+
         if n == 0:
             return
-        
+
+        total_pairs = n * (n - 1) // 2
+        checked_pairs = set()  # Track what we've checked
+
+        def check_and_record(v1, v2):
+            """Check pair if not already checked."""
+            pair = (min(v1, v2), max(v1, v2))
+            if pair not in checked_pairs:
+                checked_pairs.add(pair)
+                self._check_contradiction_pair(v1, v2, threshold)
+                return True
+            return False
+
         # Fast path for small graphs: check all pairs
-        if n * (n - 1) // 2 <= max_pairs:
+        if total_pairs <= max_pairs:
             for i, v1 in enumerate(vertices):
                 for v2 in vertices[i+1:]:
                     self._check_contradiction_pair(v1, v2, threshold)
-        else:
-            # Large graph: sample pairs
-            import random
-            sampled = 0
-            while sampled < max_pairs:
-                v1 = random.choice(vertices)
-                v2 = random.choice(vertices)
-                if v1 != v2 and (v1, v2) not in self.contradiction_pairs and (v2, v1) not in self.contradiction_pairs:
+            return
+
+        # === STRATEGY 1: Graph-based (edges and 2-hop neighbors) ===
+        # Beliefs connected by edges are semantically related - check these first
+        pairs_budget = max_pairs
+
+        # Check all edges
+        for v1, v2 in self.graph.edges():
+            if v1 in self.beliefs and v2 in self.beliefs:
+                if check_and_record(v1, v2):
+                    pairs_budget -= 1
+                if pairs_budget <= 0:
+                    return
+
+        # Check 2-hop neighbors (common cause of contradictions)
+        for v1 in vertices:
+            if pairs_budget <= 0:
+                break
+            neighbors = set(self.graph.neighbors(v1))
+            two_hop = set()
+            for n1 in neighbors:
+                if n1 in self.beliefs:
+                    two_hop.update(self.graph.neighbors(n1))
+            two_hop.discard(v1)
+            two_hop -= neighbors  # Exclude direct neighbors (already checked)
+
+            for v2 in two_hop:
+                if v2 in self.beliefs:
+                    if check_and_record(v1, v2):
+                        pairs_budget -= 1
+                    if pairs_budget <= 0:
+                        break
+
+        # === STRATEGY 2: Embedding-based clustering ===
+        # Group vertices by embedding similarity, check within groups
+        if pairs_budget > 0 and n > 10:
+            # Build embedding matrix
+            embeddings = np.array([self.beliefs[v].mean for v in vertices])
+
+            # Simple clustering: divide into spatial buckets
+            n_clusters = min(10, n // 5)
+            if n_clusters > 1:
+                # Random cluster centers from data
+                center_indices = random.sample(range(n), n_clusters)
+                centers = embeddings[center_indices]
+
+                # Assign to nearest center
+                clusters = [[] for _ in range(n_clusters)]
+                for i, v in enumerate(vertices):
+                    distances = np.linalg.norm(embeddings[i] - centers, axis=1)
+                    cluster_id = np.argmin(distances)
+                    clusters[cluster_id].append(v)
+
+                # Check pairs within each cluster
+                for cluster in clusters:
+                    if pairs_budget <= 0:
+                        break
+                    for i, v1 in enumerate(cluster):
+                        if pairs_budget <= 0:
+                            break
+                        for v2 in cluster[i+1:]:
+                            if check_and_record(v1, v2):
+                                pairs_budget -= 1
+                            if pairs_budget <= 0:
+                                break
+
+        # === STRATEGY 3: Random sampling for remaining budget ===
+        if pairs_budget > 0:
+            # Build list of unchecked pairs efficiently
+            unchecked = []
+            for i, v1 in enumerate(vertices):
+                if pairs_budget <= 0:
+                    break
+                for v2 in vertices[i+1:]:
+                    pair = (v1, v2)
+                    if pair not in checked_pairs:
+                        unchecked.append(pair)
+                    if len(unchecked) >= pairs_budget * 2:  # Collect enough for sampling
+                        break
+
+            if unchecked:
+                sample_size = min(pairs_budget, len(unchecked))
+                sampled = random.sample(unchecked, sample_size)
+                for v1, v2 in sampled:
                     self._check_contradiction_pair(v1, v2, threshold)
-                    sampled += 1
     
     def _check_contradiction_pair(self, v1: int, v2: int, threshold: float):
         """Helper: check if two vertices contradict"""

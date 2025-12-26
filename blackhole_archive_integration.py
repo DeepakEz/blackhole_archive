@@ -292,9 +292,10 @@ class ArchiveInterface:
                 # Cache result
                 memory_response = self._translate_from_archive_response(response, query)
                 self.query_cache[cache_key] = memory_response
-            except Exception:
-                # Query failed, will retry next time
-                pass
+            except Exception as e:
+                # Query failed, log and retry next time
+                import logging
+                logging.debug(f"Archive query failed (will retry): {type(e).__name__}: {e}")
     
     def _compute_cache_key(self, query: MemoryQuery) -> str:
         """Compute cache key from query"""
@@ -600,9 +601,10 @@ class MycoNetMemoryLayer:
             if response is not None and query.callback:
                 query.callback(response)
 
-        except Exception:
+        except Exception as e:
             # Query failed, callback not executed
-            pass
+            import logging
+            logging.debug(f"Memory query failed for agent: {type(e).__name__}: {e}")
 
         # Clear request
         agent.memory_request = None
