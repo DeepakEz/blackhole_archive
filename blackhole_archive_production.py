@@ -48,6 +48,10 @@ from epistemic_enhancements import (
     StructuralEpistemicCoupler,
     TransportLearner
 )
+from formal_lyapunov_stability import (
+    LyapunovStabilityMonitor,
+    StabilityParameters
+)
 
 
 # =============================================================================
@@ -328,7 +332,18 @@ class ProductionSimulationEngine:
         self.transport_protocol = WormholeTransportProtocol(
             throat_area=throat_area
         )
-        
+
+        # LAYER 4: FORMAL STABILITY MONITORING
+        self.logger.info("Initializing Lyapunov stability monitor...")
+        stability_params = StabilityParameters(
+            alpha=0.1,           # Dissipation rate
+            beta=0.5,            # Disturbance gain
+            energy_min=50.0,     # Emergency if energy drops below
+            entropy_max=500.0,   # Emergency if entropy exceeds
+            violation_threshold=3  # Consecutive violations before emergency
+        )
+        self.stability_monitor = LyapunovStabilityMonitor(stability_params)
+
         # AGENTS
         self.logger.info("Initializing production agents...")
         self.agents = self._initialize_agents()
@@ -378,7 +393,14 @@ class ProductionSimulationEngine:
             'graph_queue_length': [],        # Packets waiting in graph queues
             'protocol_queue_length': [],     # Packets in transport protocol
             'transport_success_rate': [],
-            'infrastructure_efficiency': []
+            'infrastructure_efficiency': [],
+
+            # Lyapunov Stability Monitoring
+            'lyapunov_V': [],              # Storage function V(t)
+            'lyapunov_dV': [],             # Rate of change dV/dt
+            'stability_violations': [],     # Cumulative violations
+            'stability_rate': [],           # % stable steps
+            'emergency_activations': []     # Emergency mode count
         }
 
         # FIX: PPI tracking counters (reset each logging interval)
@@ -558,13 +580,43 @@ class ProductionSimulationEngine:
                         wait_time=0.0
                     )
 
-            # Legacy noise injection (only if enhanced overmind hasn't acted)
+            # LYAPUNOV STABILITY MONITORING
+            # Check if noise injection or belief pruning occurred
+            noise_injected = 'inject_uncertainty' in control_actions
+            belief_pruned = (compression_stats['pruned'] > 0) if step % 50 == 0 and 'compression_stats' in dir() else False
+
+            # Compute average free energy for stability check
+            avg_free_energy = self.stats['free_energy'][-1] if self.stats['free_energy'] else 0.0
+
+            # Update stability monitor
+            stability_state = self.stability_monitor.update(
+                energy=total_energy,
+                epistemic_graph=self.epistemic_graph,
+                noise_injection=noise_injected,
+                belief_pruning=belief_pruned,
+                free_energy=avg_free_energy
+            )
+
+            # React to stability violations
+            if not stability_state.is_stable:
+                adjustments = self.stability_monitor.adaptive_control_response(
+                    stability_state, self.overmind
+                )
+                if stability_state.emergency_mode:
+                    self.logger.warning(
+                        f"Step {step}: EMERGENCY MODE - V={stability_state.V_t:.2f}, "
+                        f"violations={stability_state.violation_count}"
+                    )
+
+            # Legacy noise injection (only if enhanced overmind hasn't acted AND stable)
             if 'inject_uncertainty' not in control_actions and self.overmind.should_inject_noise():
-                self.logger.info(f"Step {step}: Legacy overmind injecting epistemic noise")
-                for _ in range(5):
-                    pos = np.random.randn(16)
-                    self.epistemic_graph.add_belief(pos, salience=0.8, initial_uncertainty=2.0)
-            
+                # Don't inject noise if system is unstable
+                if stability_state.is_stable:
+                    self.logger.info(f"Step {step}: Legacy overmind injecting epistemic noise")
+                    for _ in range(5):
+                        pos = np.random.randn(16)
+                        self.epistemic_graph.add_belief(pos, salience=0.8, initial_uncertainty=2.0)
+
             # STATISTICS
             self.stats['total_energy'] = total_energy
             self.stats['n_structures_built'] = sum(b.structures_built for b in self.agents['beavers'])
@@ -657,6 +709,15 @@ class ProductionSimulationEngine:
                 self.stats['ppi_integrity_rate'].append(
                     valid_provenance / total_packets if total_packets > 0 else 1.0
                 )
+
+                # Lyapunov Stability Statistics
+                self.stats['lyapunov_V'].append(stability_state.V_t)
+                self.stats['lyapunov_dV'].append(stability_state.dV_dt)
+                self.stats['stability_violations'].append(self.stability_monitor.total_violations)
+                stable_steps = len([s for s in self.stability_monitor.stability_history if s])
+                total_steps = len(self.stability_monitor.stability_history)
+                self.stats['stability_rate'].append(stable_steps / max(1, total_steps))
+                self.stats['emergency_activations'].append(self.stability_monitor.emergency_activations)
 
             # LOGGING - format compatible with complete_analysis_viz.py
             if step % 100 == 0:
@@ -751,7 +812,9 @@ class ProductionSimulationEngine:
                 'enhanced_overmind_active': True,
                 'belief_compression_active': True,
                 'transport_learning_active': True
-            }
+            },
+            # Lyapunov Stability Certificate
+            'stability_certificate': self.stability_monitor.get_stability_certificate()
         }
 
         with open(report_path, 'w') as f:
@@ -772,6 +835,7 @@ if __name__ == "__main__":
     print("  Layer 1: Enhanced Physics (correct curvature)")
     print("  Layer 2: Epistemic Cognition (beliefs + free energy + Overmind)")
     print("  Layer 3: Transport Protocol (holographic bounds)")
+    print("  Layer 4: Lyapunov Stability (formal guarantees)")
     
     config = SimulationConfig(
         t_max=100.0,
