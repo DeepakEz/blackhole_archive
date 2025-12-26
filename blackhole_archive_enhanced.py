@@ -1038,10 +1038,11 @@ class EnhancedBeaverAgent(Agent):
         if self.construction_cooldown > 0:
             self.construction_cooldown -= dt
 
-        # Check curvature
-        curvature = spacetime.get_ricci_scalar(self.position)
+        # Check curvature using Kretschmann-based tidal strength (not Ricci which is 0 in vacuum)
+        # get_curvature() returns sqrt(K) where K = 48M²/r⁶ for Schwarzschild
+        curvature = spacetime.get_curvature(self.position)
 
-        # FIX #1: Lower threshold by 1 order of magnitude (was 0.1, now 0.01)
+        # Threshold based on tidal strength: ~0.01 corresponds to moderate curvature regions
         if curvature > 0.01 and self.energy > 0.05 and self.construction_cooldown <= 0:
             # FIX #5: Diminishing returns based on local structural density
             local_structure = spacetime.get_structural_field_at(self.position)
@@ -1170,8 +1171,14 @@ class EnhancedAntAgent(Agent):
         # Sample local information
         info_density = spacetime.get_information_density(self.position)
 
-        # If high information density, create vertex or attach to nearby existing one
-        if info_density > 0.5 and self.current_vertex is None:
+        # ENERGY REGENERATION: Foraging reward for exploring high-info regions
+        # Ants gain energy proportional to information density (biological foraging analog)
+        foraging_gain = dt * 0.002 * info_density  # Scales with info richness
+        self.energy = min(1.5, self.energy + foraging_gain)  # Cap at 1.5x initial energy
+
+        # If sufficient information density, create vertex or attach to nearby existing one
+        # LOWERED THRESHOLD: 0.5 → 0.25 to allow more vertex creation in moderate-info regions
+        if info_density > 0.25 and self.current_vertex is None:
             # Check for nearby existing vertices first (spatial co-occurrence)
             nearby_vertex = self._find_nearby_vertex(semantic_graph, distance_threshold=2.0)
 
@@ -1187,14 +1194,15 @@ class EnhancedAntAgent(Agent):
                     salience=info_density,
                     current_time=current_time
                 )
-                # New vertices don't need mark_vertex_accessed - creation_time handles grace period
+                # ENERGY REWARD: Creating new vertices rewards ants (discovery incentive)
+                self.energy = min(1.5, self.energy + 0.05)
 
             self.current_vertex = vertex_id
             self.path_history.append(vertex_id)
             self.discovery_times[vertex_id] = current_time
 
-            # FIX #3: Generate packet when discovering salient vertex
-            if info_density > 0.5:  # Lower threshold to enable packet flow
+            # Generate packet when discovering salient vertex
+            if info_density > 0.35:  # Moderate threshold for packet generation
                 packet = {
                     'content': f"discovery_{vertex_id}",
                     'salience': info_density,
@@ -1223,18 +1231,36 @@ class EnhancedAntAgent(Agent):
                 # Count nearby structures for structure-dependent edge probability
                 nearby_structures = len(self._find_all_nearby_vertices(semantic_graph, distance_threshold=3.0))
 
-                # CONDITIONAL EDGE POLICY 1: Temporal adjacency - connect sequential discoveries
-                # Now requires co-activation, not just adjacency
+                # EDGE POLICY 1: Temporal adjacency - connect sequential discoveries
+                # Path continuity is GUARANTEED during bootstrap phase to kickstart network
                 if len(self.path_history) > 1:
                     prev_vertex = self.path_history[-2]
                     if prev_vertex in semantic_graph.graph and self.current_vertex in semantic_graph.graph:
-                        # Use conditional edge formation (requires co-occurrence)
                         # First ensure both vertices have activation records
                         semantic_graph.record_activation(prev_vertex, current_time - 0.1, self.id)
-                        if semantic_graph.add_edge_conditional(prev_vertex, self.current_vertex, 1.0,
-                                                               current_time, nearby_structures):
-                            semantic_graph.add_edge(self.current_vertex, prev_vertex, pheromone=1.0)
-                            self.pheromone_deposits += 2
+
+                        # Check if edge already exists
+                        if not semantic_graph.graph.has_edge(prev_vertex, self.current_vertex):
+                            # BOOTSTRAP GUARANTEE: Always create path edges during bootstrap
+                            in_bootstrap = semantic_graph.is_in_bootstrap_phase(current_time)
+                            edge_created = False
+
+                            if in_bootstrap:
+                                # Guaranteed edge creation during bootstrap for path continuity
+                                semantic_graph.add_edge(prev_vertex, self.current_vertex, pheromone=1.0)
+                                semantic_graph.add_edge(self.current_vertex, prev_vertex, pheromone=1.0)
+                                edge_created = True
+                            else:
+                                # Post-bootstrap: use conditional edge formation
+                                if semantic_graph.add_edge_conditional(prev_vertex, self.current_vertex, 1.0,
+                                                                       current_time, nearby_structures):
+                                    semantic_graph.add_edge(self.current_vertex, prev_vertex, pheromone=1.0)
+                                    edge_created = True
+
+                            if edge_created:
+                                self.pheromone_deposits += 2
+                                # ENERGY REWARD: Edge creation strengthens the network
+                                self.energy = min(1.5, self.energy + 0.03)
 
                 # CONDITIONAL EDGE POLICY 2: Co-occurrence - connect vertices discovered close in time
                 # Only creates edges if co-occurrence count > 0 (temporal overlap requirement)
@@ -1247,6 +1273,8 @@ class EnhancedAntAgent(Agent):
                         if semantic_graph.add_edge_conditional(self.current_vertex, other_vertex, 0.5,
                                                                current_time, nearby_structures):
                             semantic_graph.add_edge(other_vertex, self.current_vertex, pheromone=0.5)
+                            # ENERGY REWARD: Co-occurrence edges reinforce memory patterns
+                            self.energy = min(1.5, self.energy + 0.02)
 
                 # CONDITIONAL EDGE POLICY 3: Spatial proximity - connect to nearby vertices
                 # Structure-dependent probability: 0.05 + 0.05 * nearby_structures
@@ -1257,6 +1285,8 @@ class EnhancedAntAgent(Agent):
                         if semantic_graph.add_edge_conditional(self.current_vertex, nearby_v, 0.3,
                                                                current_time, nearby_structures):
                             semantic_graph.add_edge(nearby_v, self.current_vertex, pheromone=0.3)
+                            # ENERGY REWARD: Spatial connections expand network reach
+                            self.energy = min(1.5, self.energy + 0.01)
 
                 # Choose next vertex - FIX: Use both successors and predecessors for DiGraph
                 successors = set(semantic_graph.graph.successors(self.current_vertex))
@@ -1514,11 +1544,12 @@ class SemanticGraph:
     PHASE_2_MATURITY_EDGES = 5
     MIN_ENTROPY_FOR_TRANSPORT = 0.3
 
-    # Bootstrap phase parameters
-    BOOTSTRAP_DURATION = 30.0  # Time units for bootstrap phase
+    # Bootstrap phase parameters - CRITICAL FOR ANT SURVIVAL
+    # Extended bootstrap allows network to stabilize before strict edge policies apply
+    BOOTSTRAP_DURATION = 40.0  # Time units for bootstrap phase (increased from 30)
     BOOTSTRAP_EDGE_PROB_MULTIPLIER = 5.0  # Higher edge probability during bootstrap
-    VERTEX_GRACE_PERIOD = 15.0  # New vertices protected from pruning for this duration
-    MIN_STABLE_VERTICES = 8  # Minimum vertices to maintain for stability
+    VERTEX_GRACE_PERIOD = 20.0  # New vertices protected from pruning (increased from 15)
+    MIN_STABLE_VERTICES = 10  # Minimum vertices to maintain for stability (increased from 8)
 
     def __init__(self):
         self.graph = nx.DiGraph()
@@ -1872,29 +1903,35 @@ class SemanticGraph:
         in_bootstrap = self.is_in_bootstrap_phase(current_time)
 
         if in_bootstrap:
-            # BOOTSTRAP PHASE: More permissive edge formation
-            # Allow edges based on spatial proximity alone
+            # BOOTSTRAP PHASE: Very permissive edge formation to kickstart the network
+            # Critical for ant survival: edges reduce energy decay, so need rapid edge formation
             pos1 = self.graph.nodes[v1].get('position')
             pos2 = self.graph.nodes[v2].get('position')
 
-            spatial_proximity_bonus = 0.0
-            if pos1 is not None and pos2 is not None:
-                try:
-                    spatial_dist = np.linalg.norm(pos1[1:] - pos2[1:])
-                    # Closer vertices get higher bonus (inverse distance)
-                    spatial_proximity_bonus = 1.0 / (1.0 + spatial_dist)
-                except (TypeError, ValueError):
-                    pass
+            # GUARANTEED EDGES: First few edges are always created to bootstrap network
+            n_edges = self.graph.number_of_edges()
+            if n_edges < 10:
+                # Strongly encourage initial edge formation
+                edge_prob = 0.8  # 80% chance for first 10 edges
+            else:
+                spatial_proximity_bonus = 0.0
+                if pos1 is not None and pos2 is not None:
+                    try:
+                        spatial_dist = np.linalg.norm(pos1[1:] - pos2[1:])
+                        # Closer vertices get higher bonus (inverse distance, stronger effect)
+                        spatial_proximity_bonus = 2.0 / (1.0 + spatial_dist)
+                    except (TypeError, ValueError):
+                        pass
 
-            # Bootstrap base probability is much higher
-            base_prob = (0.1 + 0.1 * nearby_structures) * self.BOOTSTRAP_EDGE_PROB_MULTIPLIER
+                # Bootstrap base probability is much higher (increased from 5x to 10x)
+                base_prob = (0.2 + 0.1 * nearby_structures) * self.BOOTSTRAP_EDGE_PROB_MULTIPLIER * 2.0
 
-            # Co-occurrence still helps but not required
-            co_occurrence = self.compute_co_occurrence(v1, v2, current_time)
-            co_occurrence_bonus = 1.0 + 0.2 * co_occurrence
+                # Co-occurrence still helps but not required
+                co_occurrence = self.compute_co_occurrence(v1, v2, current_time)
+                co_occurrence_bonus = 1.0 + 0.3 * co_occurrence
 
-            # Final bootstrap probability
-            edge_prob = min_salience * co_occurrence_bonus * (base_prob + spatial_proximity_bonus)
+                # Final bootstrap probability (capped at 0.9)
+                edge_prob = min(0.9, min_salience * co_occurrence_bonus * (base_prob + spatial_proximity_bonus))
 
         else:
             # POST-BOOTSTRAP: Standard conditional edge formation
