@@ -35,6 +35,7 @@ venv/
 # Checkpoints and results
 checkpoints/
 results/
+production_results/
 configs/
 *.pt
 *.pth
