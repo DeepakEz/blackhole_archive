@@ -288,8 +288,19 @@ class Agent:
     metadata: Dict[str, Any] = field(default_factory=dict)
     
     def update(self, dt: float, spacetime: SimplifiedSpacetime):
-        """Update agent (override in subclasses)"""
-        pass
+        """
+        Base agent update - handles common physics.
+        Override in subclasses for specialized behavior.
+        """
+        # Update position from velocity
+        self.position = self.position + dt * self.velocity
+
+        # Base energy decay (can be modified by subclasses)
+        self.energy -= dt * 0.001
+
+        # Check death condition
+        if self.energy <= 0:
+            self.state = "dead"
 
 class BeaverAgent(Agent):
     """Beaver: builds structures"""

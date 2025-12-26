@@ -107,7 +107,7 @@ class CommunicationVisualizer:
             # Update matrix based on recent communications
             self._update_communication_matrix(hub, env)
         else:
-            # Placeholder values
+            # Default values when communication hub is not available
             self.message_counts.append(0)
             self.broadcast_counts.append(0)
             self.quorum_attempts.append(0)

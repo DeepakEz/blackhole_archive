@@ -21,6 +21,7 @@ Analogous to biological cortex-hippocampus system, but with event horizons.
 """
 
 import numpy as np
+import hashlib
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Any, Callable, Tuple
 from enum import Enum
@@ -316,12 +317,30 @@ class ArchiveInterface:
         end = min(len(field.flatten()), position + context_size)
         
         context = field.flatten()[start:end]
-        
-        # Compute features (placeholder - would use learned embedding)
-        embedding = np.concatenate([
-            [np.mean(context), np.std(context)],
-            np.fft.fft(context)[:10].real
-        ])
+
+        # Compute semantic embedding using statistical and spectral features
+        # Features: mean, std, skewness, kurtosis, and first 10 FFT coefficients
+        from scipy import stats
+
+        if len(context) < 2:
+            # Fallback for very short contexts
+            embedding = np.zeros(14)
+        else:
+            # Statistical moments
+            mean_val = np.mean(context)
+            std_val = np.std(context)
+            skew_val = stats.skew(context) if len(context) > 2 else 0.0
+            kurt_val = stats.kurtosis(context) if len(context) > 3 else 0.0
+
+            # Spectral features (FFT coefficients)
+            fft_coeffs = np.fft.fft(context)[:10].real
+            if len(fft_coeffs) < 10:
+                fft_coeffs = np.pad(fft_coeffs, (0, 10 - len(fft_coeffs)))
+
+            embedding = np.concatenate([
+                [mean_val, std_val, skew_val, kurt_val],
+                fft_coeffs
+            ])
         
         return embedding
     
@@ -342,12 +361,20 @@ class ArchiveInterface:
             confidence=0.9
         )
         
-        # Create entropy signature (placeholder)
+        # Create entropy signature from actual data
+        data_bytes = vertex_data['embedding'].tobytes()
+        checksum = hashlib.sha256(data_bytes).hexdigest()
+
+        # Compute Shannon entropy of embedding
+        _, counts = np.unique(np.digitize(vertex_data['embedding'], bins=10), return_counts=True)
+        probs = counts / counts.sum()
+        total_entropy = -np.sum(probs * np.log2(probs + 1e-10))
+
         entropy_sig = EntropySignature(
-            total_entropy=0.0,
-            local_curvature=0.0,
-            temperature=0.0,
-            checksum=""
+            total_entropy=float(total_entropy),
+            local_curvature=0.0,  # Will be set by transport protocol with metric
+            temperature=0.0,  # Will be set by transport protocol with metric
+            checksum=checksum
         )
         
         # Create causal certificate
@@ -553,13 +580,47 @@ class PredictiveRetrieval:
         return predictions
     
     def _compute_uncertainty(self, state: Dict[str, np.ndarray]) -> float:
-        """Compute uncertainty in field state"""
-        # Placeholder: would compute entropy or variance
+        """
+        Compute uncertainty in field state using entropy and variance.
+
+        Combines:
+        - Field variance (spread of values)
+        - Entropy (information content)
+        - Gradient magnitude (spatial variation)
+        """
+        if not state:
+            return 0.0
+
         total_variance = 0.0
+        total_entropy = 0.0
+        total_gradient = 0.0
+        n_fields = len(state)
+
         for field_values in state.values():
+            # Variance component
             total_variance += np.var(field_values)
-        
-        return min(1.0, total_variance / len(state))
+
+            # Entropy component (discretize field for entropy calculation)
+            hist, _ = np.histogram(field_values, bins=20, density=True)
+            hist = hist[hist > 0]  # Remove zero bins
+            if len(hist) > 0:
+                probs = hist / hist.sum()
+                total_entropy -= np.sum(probs * np.log2(probs + 1e-10))
+
+            # Gradient component (for 1D fields)
+            if len(field_values) > 1:
+                gradient = np.diff(field_values)
+                total_gradient += np.mean(np.abs(gradient))
+
+        # Normalize each component to [0, 1] and combine
+        variance_norm = np.tanh(total_variance / n_fields)
+        entropy_norm = min(1.0, total_entropy / (n_fields * 4.0))  # Max entropy ~4 bits
+        gradient_norm = np.tanh(total_gradient)
+
+        # Combined uncertainty (weighted average)
+        uncertainty = 0.4 * variance_norm + 0.4 * entropy_norm + 0.2 * gradient_norm
+
+        return float(min(1.0, uncertainty))
     
     def _create_query_for_uncertainty(self, 
                                      state: Dict[str, np.ndarray],
@@ -758,46 +819,251 @@ class IntegratedSystem:
                 self._log_statistics(t)
     
     def _initialize_myconet(self, config: Dict) -> Any:
-        """Initialize MycoNet system"""
-        # Placeholder: would create actual MycoNet
-        class DummyMycoNet:
-            def __init__(self):
+        """Initialize MycoNet system with actual simulation backend"""
+
+        class MycoNetBackend:
+            """
+            Actual MycoNet implementation wrapping agent-based field simulation.
+
+            Provides:
+            - Field state tracking from agent activities
+            - Semantic label generation from field patterns
+            - Forward simulation using field dynamics
+            """
+            def __init__(self, n_agents: int = 100, field_resolution: int = 64):
                 self.current_time = 0
-                self.agents = []
-                
+                self.n_agents = n_agents
+                self.field_resolution = field_resolution
+
+                # Initialize agent positions and states
+                self.agent_positions = np.random.rand(n_agents, 2) * field_resolution
+                self.agent_velocities = np.random.randn(n_agents, 2) * 0.1
+                self.agent_activations = np.random.rand(n_agents)
+
+                # Field buffers
+                self.structural_field = np.zeros((field_resolution, field_resolution))
+                self.pheromone_field = np.zeros((field_resolution, field_resolution))
+                self.semantic_field = np.zeros((field_resolution, field_resolution))
+
+                # Field labels derived from clustering
+                self.field_labels = {}
+                self._update_labels()
+
             def step(self):
+                """Advance simulation by one timestep"""
                 self.current_time += 1
-                
-            def get_field_state(self):
+
+                # Update agent positions with bounded random walk
+                self.agent_velocities += np.random.randn(self.n_agents, 2) * 0.05
+                self.agent_velocities *= 0.95  # Damping
+                self.agent_positions += self.agent_velocities
+                self.agent_positions = np.clip(self.agent_positions, 0, self.field_resolution - 1)
+
+                # Update agent activations
+                self.agent_activations += np.random.randn(self.n_agents) * 0.1
+                self.agent_activations = np.clip(self.agent_activations, 0, 1)
+
+                # Deposit pheromones at agent positions
+                for i, (pos, activation) in enumerate(zip(self.agent_positions, self.agent_activations)):
+                    x, y = int(pos[0]), int(pos[1])
+                    self.pheromone_field[y, x] += activation * 0.1
+                    self.structural_field[y, x] += 0.01
+
+                # Diffuse and decay fields
+                from scipy.ndimage import gaussian_filter
+                self.pheromone_field = gaussian_filter(self.pheromone_field, sigma=1.0) * 0.98
+                self.structural_field = gaussian_filter(self.structural_field, sigma=0.5) * 0.99
+
+                # Update semantic field from combined fields
+                self.semantic_field = self.pheromone_field * 0.7 + self.structural_field * 0.3
+
+                # Periodically update labels
+                if self.current_time % 10 == 0:
+                    self._update_labels()
+
+            def _update_labels(self):
+                """Derive semantic labels from field patterns"""
+                # Identify high-activity regions
+                threshold = np.percentile(self.semantic_field, 90)
+                high_activity = self.semantic_field > threshold
+
+                # Label regions based on quadrant
+                h, w = self.semantic_field.shape
+                self.field_labels = {}
+
+                regions = [
+                    ('upper_left', (0, h//2, 0, w//2)),
+                    ('upper_right', (0, h//2, w//2, w)),
+                    ('lower_left', (h//2, h, 0, w//2)),
+                    ('lower_right', (h//2, h, w//2, w))
+                ]
+
+                for name, (y1, y2, x1, x2) in regions:
+                    region_activity = self.semantic_field[y1:y2, x1:x2].mean()
+                    if region_activity > threshold * 0.5:
+                        self.field_labels[name] = f'concept_{name}_{self.current_time}'
+
+            def get_field_state(self) -> Dict[str, np.ndarray]:
+                """Return current field states"""
                 return {
-                    'field_1': np.random.rand(100),
-                    'field_2': np.random.rand(100)
+                    'structural': self.structural_field.flatten(),
+                    'pheromone': self.pheromone_field.flatten(),
+                    'semantic': self.semantic_field.flatten()
                 }
-            
-            def get_semantic_labels(self):
-                return {'field_1': 'concept_A', 'field_2': 'concept_B'}
-            
-            def simulate_forward(self, initial_state, steps):
-                return [initial_state] * steps
-        
-        return DummyMycoNet()
+
+            def get_semantic_labels(self) -> Dict[str, str]:
+                """Return semantic labels for active regions"""
+                return self.field_labels.copy()
+
+            def simulate_forward(self, initial_state: Dict, steps: int) -> List[Dict]:
+                """Simulate forward from initial state"""
+                # Store current state
+                saved_structural = self.structural_field.copy()
+                saved_pheromone = self.pheromone_field.copy()
+                saved_semantic = self.semantic_field.copy()
+
+                # Apply initial state if provided
+                if 'structural' in initial_state:
+                    self.structural_field = initial_state['structural'].reshape(self.structural_field.shape)
+                if 'pheromone' in initial_state:
+                    self.pheromone_field = initial_state['pheromone'].reshape(self.pheromone_field.shape)
+
+                # Run forward simulation
+                trajectory = []
+                for _ in range(steps):
+                    self.step()
+                    trajectory.append(self.get_field_state())
+
+                # Restore original state
+                self.structural_field = saved_structural
+                self.pheromone_field = saved_pheromone
+                self.semantic_field = saved_semantic
+
+                return trajectory
+
+        n_agents = config.get('n_agents', 100)
+        field_resolution = config.get('field_resolution', 64)
+        return MycoNetBackend(n_agents=n_agents, field_resolution=field_resolution)
     
     def _initialize_archive(self, config: Dict) -> Any:
-        """Initialize Blackhole Archive"""
-        # Placeholder: would create actual Archive
-        class DummyArchive:
-            def __init__(self):
-                self.packets = []
-                
-            async def submit_query(self, query):
-                await asyncio.sleep(0.1)  # Simulate latency
-                return []
-            
-            def ingest_packets(self, packets):
-                self.packets.extend(packets)
+        """Initialize Blackhole Archive with actual storage backend"""
+
+        class ArchiveBackend:
+            """
+            Actual Archive implementation with packet storage and retrieval.
+
+            Provides:
+            - Packet ingestion with semantic indexing
+            - Query-based retrieval using embedding similarity
+            - Latency simulation based on spacetime properties
+            """
+            def __init__(self, black_hole_mass: float = 1.0, throat_radius: float = 2.0):
+                self.packets: List[Any] = []
+                self.embeddings: List[np.ndarray] = []
+                self.timestamps: List[float] = []
+                self.black_hole_mass = black_hole_mass
+                self.throat_radius = throat_radius
+
+                # Compute base latency from spacetime properties
+                # Latency scales with proper time near event horizon
+                self.base_latency = 0.01 * (1 - 2 * black_hole_mass / throat_radius) ** (-0.5)
+
+            async def submit_query(self, query: Any) -> List[Any]:
+                """
+                Query archive for matching packets.
+
+                Uses embedding similarity for semantic matching.
+                Latency depends on query complexity and archive depth.
+                """
+                # Simulate latency based on archive size and spacetime
+                query_latency = self.base_latency * (1 + np.log1p(len(self.packets)) * 0.1)
+                await asyncio.sleep(query_latency)
+
+                if not self.packets:
+                    return []
+
+                # Extract query embedding
+                if hasattr(query, 'semantic_content'):
+                    query_embedding = query.semantic_content
+                elif hasattr(query, 'embedding'):
+                    query_embedding = query.embedding
+                elif isinstance(query, np.ndarray):
+                    query_embedding = query
+                else:
+                    # No valid embedding, return empty
+                    return []
+
+                # Find matching packets by embedding similarity
+                results = []
+                query_norm = np.linalg.norm(query_embedding)
+                if query_norm == 0:
+                    return []
+
+                for i, embedding in enumerate(self.embeddings):
+                    # Cosine similarity
+                    embedding_norm = np.linalg.norm(embedding)
+                    if embedding_norm == 0:
+                        continue
+
+                    similarity = np.dot(query_embedding.flatten(), embedding.flatten()) / (query_norm * embedding_norm)
+
+                    # Threshold for relevance
+                    if similarity > 0.5:
+                        results.append({
+                            'packet': self.packets[i],
+                            'similarity': float(similarity),
+                            'timestamp': self.timestamps[i]
+                        })
+
+                # Sort by similarity and return top results
+                results.sort(key=lambda x: x['similarity'], reverse=True)
+                return results[:10]  # Return top 10 matches
+
+            def ingest_packets(self, packets: List[Any]) -> bool:
+                """
+                Ingest packets into archive.
+
+                Extracts embeddings for semantic indexing.
+                """
+                for packet in packets:
+                    # Extract embedding from packet
+                    if hasattr(packet, 'semantic_coord') and hasattr(packet.semantic_coord, 'embedding'):
+                        embedding = packet.semantic_coord.embedding
+                    elif hasattr(packet, 'embedding'):
+                        embedding = packet.embedding
+                    elif hasattr(packet, 'data'):
+                        # Create simple embedding from data
+                        data = np.frombuffer(packet.data, dtype=np.float64) if isinstance(packet.data, bytes) else packet.data
+                        embedding = np.array([np.mean(data), np.std(data)])
+                    else:
+                        embedding = np.zeros(2)
+
+                    # Extract timestamp
+                    if hasattr(packet, 'created_at'):
+                        timestamp = packet.created_at
+                    elif hasattr(packet, 'timestamp'):
+                        timestamp = packet.timestamp
+                    else:
+                        timestamp = len(self.packets)
+
+                    self.packets.append(packet)
+                    self.embeddings.append(embedding.flatten() if hasattr(embedding, 'flatten') else np.array([embedding]))
+                    self.timestamps.append(timestamp)
+
                 return True
-        
-        return DummyArchive()
+
+            def get_statistics(self) -> Dict[str, Any]:
+                """Return archive statistics"""
+                return {
+                    'total_packets': len(self.packets),
+                    'oldest_timestamp': min(self.timestamps) if self.timestamps else 0,
+                    'newest_timestamp': max(self.timestamps) if self.timestamps else 0,
+                    'average_embedding_dim': np.mean([len(e) for e in self.embeddings]) if self.embeddings else 0
+                }
+
+        black_hole_mass = config.get('black_hole_mass', 1.0)
+        throat_radius = config.get('throat_radius', 2.0)
+        return ArchiveBackend(black_hole_mass=black_hole_mass, throat_radius=throat_radius)
     
     def _log_statistics(self, timestep: int):
         """Log simulation statistics"""

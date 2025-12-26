@@ -269,14 +269,26 @@ class EntropySignature:
         _, counts = np.unique(data, return_counts=True)
         probabilities = counts / counts.sum()
         entropy = -np.sum(probabilities * np.log2(probabilities + 1e-10))
-        
+
         # Checksum
         checksum = hashlib.sha256(data.tobytes()).hexdigest()
-        
-        # Placeholder values for curvature and temperature
-        curvature = 0.0  # Would compute Ricci scalar at position
-        temperature = 0.0  # Would compute local Hawking temperature
-        
+
+        # Compute actual curvature from metric
+        # For Schwarzschild metric, Ricci scalar R = 0 (vacuum solution)
+        # But Kretschmann scalar K = 48M²/r⁶ measures curvature
+        curvature = 0.0
+        if metric is not None and hasattr(metric, 'M'):
+            r = position[1] if len(position) > 1 else 1.0
+            r = max(r, metric.r_s * 1.01)  # Avoid singularity
+            # Kretschmann scalar as curvature measure
+            curvature = 48 * metric.M**2 / (r**6 + 1e-10)
+
+        # Compute Hawking temperature: T_H = ℏc³ / (8πGMk_B)
+        # In geometric units (G=c=ℏ=k_B=1): T_H = 1 / (8πM)
+        temperature = 0.0
+        if metric is not None and hasattr(metric, 'M'):
+            temperature = 1.0 / (8 * np.pi * metric.M)
+
         return EntropySignature(
             total_entropy=float(entropy),
             local_curvature=curvature,
@@ -579,6 +591,14 @@ class WormholeTransportProtocol:
         self.enqueue_accepted = 0
         self.enqueue_rejected = 0
 
+        # RTT tracking: store send timestamps for actual RTT computation
+        self.send_timestamps: Dict[str, float] = {}
+        self.current_time = 0.0  # Track simulation time
+
+    def set_current_time(self, time: float):
+        """Update current simulation time for RTT calculations"""
+        self.current_time = time
+
     def enqueue_packet(self, packet: Packet) -> bool:
         """
         Add packet to transmission queue
@@ -640,6 +660,9 @@ class WormholeTransportProtocol:
                 # Add to in-transit
                 self.channel_state.in_transit[packet.packet_id] = packet
 
+                # Record send timestamp for RTT computation
+                self.send_timestamps[packet.packet_id] = self.current_time
+
                 # Update statistics
                 self.channel_state.total_packets_sent += 1
                 self.channel_state.total_bytes_sent += packet.size_bytes
@@ -660,18 +683,28 @@ class WormholeTransportProtocol:
         if packet_id in self.channel_state.in_transit:
             packet = self.channel_state.in_transit.pop(packet_id)
             self.channel_state.delivered[packet_id] = packet
-            
+
             # Update statistics
             self.channel_state.total_packets_received += 1
             self.channel_state.total_bytes_received += packet.size_bytes
-            
-            # Update RTT estimate (placeholder)
-            # In real implementation, would use actual timestamps
-            self._update_rtt_estimate(1.0)
-            
+
+            # Compute actual RTT from stored timestamps
+            if packet_id in self.send_timestamps:
+                send_time = self.send_timestamps.pop(packet_id)
+                measured_rtt = self.current_time - send_time
+                # Ensure positive RTT (minimum of 0.01 for numerical stability)
+                measured_rtt = max(0.01, measured_rtt)
+                self._update_rtt_estimate(measured_rtt)
+            else:
+                # Fallback: use current estimate (shouldn't happen in normal operation)
+                self._update_rtt_estimate(self.rtt_estimate)
+
+            # Update average latency statistic
+            self.channel_state.average_latency = self.rtt_estimate
+
             # Congestion control: increase window (additive increase)
             self._increase_congestion_window()
-            
+
             return packet
         return None
     
@@ -868,8 +901,17 @@ class BeaverAntInterface:
     @staticmethod
     def beaver_provides_stability(beaver_position: np.ndarray,
                                    structural_field: float,
-                                   stability_duration: float) -> Message:
+                                   stability_duration: float,
+                                   metric=None) -> Message:
         """Beaver broadcasts structural stability information to ants"""
+        # Compute actual curvature from metric if available
+        curvature = 0.0
+        if metric is not None and hasattr(metric, 'M'):
+            r = beaver_position[1] if len(beaver_position) > 1 else 1.0
+            r = max(r, metric.r_s * 1.01)  # Avoid singularity
+            # Kretschmann scalar as curvature measure
+            curvature = 48 * metric.M**2 / (r**6 + 1e-10)
+
         return Message.create(
             sender_id="beaver",
             receiver_id="ants",
@@ -878,7 +920,7 @@ class BeaverAntInterface:
                 'position': beaver_position.tolist(),
                 'field_strength': structural_field,
                 'stability_duration': stability_duration,
-                'curvature': 0.0  # Placeholder
+                'curvature': curvature
             },
             timestamp=0.0
         )

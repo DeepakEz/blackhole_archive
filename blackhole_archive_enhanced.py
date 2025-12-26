@@ -376,11 +376,16 @@ class EnhancedBeaverAgent(Agent):
             # Check global material budget
             material_cost = 1.0  # Each build costs 1 unit of material
             if EnhancedBeaverAgent.global_material_budget < material_cost:
-                # No materials left - cannot build
-                pass
+                # No materials left - enter resource conservation mode
+                # Reduce velocity to conserve energy while waiting for materials
+                self.velocity *= 0.5
+                self.construction_cooldown = 5.0  # Long cooldown to wait for materials
             elif diminishing_factor < 0.15:
-                # Too much structure already - not worth building here
-                pass
+                # Too much structure already - seek less crowded area
+                # Move away from high-density region
+                gradient = spacetime.get_structural_gradient(self.position)
+                self.velocity -= 0.1 * gradient  # Move against gradient (toward less structure)
+                self.construction_cooldown = 2.0  # Short cooldown before trying elsewhere
             else:
                 # Build structure with sigmoid-capped strength
                 build_strength = 2.0 * diminishing_factor
