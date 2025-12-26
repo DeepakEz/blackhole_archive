@@ -356,7 +356,7 @@ class CorrectedActiveInferenceAgent:
 
         return best_action
 
-    def update(self, dt: float):
+    def update(self, dt: float, spacetime=None):
         """
         Update agent state using full active inference loop.
 
@@ -364,8 +364,12 @@ class CorrectedActiveInferenceAgent:
         1. OBSERVE: Get sensory data
         2. INFER: Update beliefs via Bayesian inference
         3. PLAN: Select action minimizing expected free energy
-        4. ACT: Execute the selected action
+        4. ACT: Execute the selected action (using geodesic motion if available)
         5. PREDICT: Update beliefs about future state
+
+        Args:
+            dt: Time step
+            spacetime: Optional spacetime object with geodesic_step method
         """
         if self.state != "active":
             return
@@ -391,12 +395,20 @@ class CorrectedActiveInferenceAgent:
         # 4. ACT (execute action with smoothing)
         # Blend with current velocity for smoother trajectories
         self.velocity = 0.7 * self.velocity + 0.3 * action
-        self.position += dt * self.velocity
 
-        # Boundary constraints (stay in valid spacetime region)
-        self.position[1] = max(self.position[1], 3.0)  # Stay outside horizon
-        self.position[2] = np.clip(self.position[2], 0.01, np.pi - 0.01)  # θ ∈ (0, π)
-        self.position[3] = self.position[3] % (2 * np.pi)  # φ ∈ [0, 2π)
+        # Use GEODESIC motion if spacetime is provided (respects curved geometry)
+        # NOT Euclidean: self.position += dt * self.velocity  # WRONG - ignores curvature
+        if spacetime is not None and hasattr(spacetime, 'geodesic_step'):
+            self.position, self.velocity = spacetime.geodesic_step(
+                self.position, self.velocity, dt
+            )
+        else:
+            # Fallback to Euclidean if no spacetime provided
+            self.position += dt * self.velocity
+            # Boundary constraints (stay in valid spacetime region)
+            self.position[1] = max(self.position[1], 3.0)  # Stay outside horizon
+            self.position[2] = np.clip(self.position[2], 0.01, np.pi - 0.01)  # θ ∈ (0, π)
+            self.position[3] = self.position[3] % (2 * np.pi)  # φ ∈ [0, 2π)
 
         # 5. PREDICT (update beliefs about future)
         self.belief = self.vi.predict(self.belief, action)
@@ -519,10 +531,10 @@ class CorrectedFormalSystem:
                 if beaver.state == "active":
                     beaver.update(self.config.dt, self.spacetime)
             
-            # Update formal ants
+            # Update formal ants with proper geodesic physics
             for ant in self.agents['formal_ants']:
                 if ant.state == "active":
-                    ant.update(self.config.dt)
+                    ant.update(self.config.dt, self.spacetime)
             
             # Statistics
             if step % 10 == 0:
