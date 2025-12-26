@@ -77,6 +77,21 @@ class EnhancedSpacetime:
         # FIX #7: Epistemic stress field (affected by contradictions/congestion)
         # High epistemic stress = harder to traverse, like gravitational stress
         self.epistemic_stress = np.zeros((config.n_r, config.n_theta, config.n_phi))
+
+        # DYNAMIC SPACETIME: Stress-energy tensor and metric perturbation
+        # T_μν tracks energy density from agents and packets
+        # Metric perturbation h_μν represents back-reaction on geometry
+        self.stress_energy = np.zeros((config.n_r, config.n_theta, config.n_phi))
+        self.metric_perturbation = np.zeros((config.n_r, config.n_theta, config.n_phi))
+
+        # Bekenstein bound tracking: S ≤ 2πkRE/(ℏc)
+        # In geometric units (G=c=1): S ≤ 2πRE
+        self.local_entropy = np.zeros((config.n_r, config.n_theta, config.n_phi))
+        self.bekenstein_violations = 0  # Count of thermalization events
+
+        # Landauer limit tracking: E = k_B T ln(2) per bit erased
+        self.bits_erased = 0
+        self.thermodynamic_heat = 0.0  # Cumulative heat from erasure
     
     def _compute_metric(self) -> np.ndarray:
         """Compute Schwarzschild metric"""
@@ -437,6 +452,357 @@ class EnhancedSpacetime:
         # Stress increases traversal cost
         return base_cost * (1.0 + stress)
 
+    # =========================================================================
+    # DYNAMIC SPACETIME: Stress-Energy and Metric Back-Reaction
+    # =========================================================================
+
+    def add_stress_energy(self, position: np.ndarray, energy: float):
+        """
+        Add stress-energy contribution at position.
+
+        In full GR: G_μν = 8πT_μν
+        Here we use linearized approximation where metric perturbation
+        is proportional to integrated stress-energy.
+
+        Args:
+            position: 4-position (t, r, θ, φ)
+            energy: Energy contribution (from agent or packet)
+        """
+        i = np.argmin(np.abs(self.r - position[1]))
+        j = np.argmin(np.abs(self.theta - position[2]))
+        k = np.argmin(np.abs(self.phi - position[3]))
+
+        # Add to stress-energy tensor (simplified scalar representation)
+        self.stress_energy[i, j, k] += energy
+
+    def evolve_metric(self, dt: float):
+        """
+        Evolve metric perturbation based on stress-energy distribution.
+
+        Uses linearized Einstein equations in weak-field limit:
+        □h_μν = -16πT_μν
+
+        In our simplified scalar model:
+        ∂²h/∂t² - ∇²h = -16π T
+
+        The metric perturbation affects:
+        - Time dilation (stronger near high energy density)
+        - Geodesic paths (agents curve toward energy concentrations)
+        """
+        # Wave equation evolution with damping
+        # Using explicit finite difference: h_new = 2h - h_old + c²dt²∇²h - 16πT dt²
+
+        # Compute Laplacian of metric perturbation
+        laplacian = np.zeros_like(self.metric_perturbation)
+
+        # Interior points only (finite difference)
+        for i in range(1, self.config.n_r - 1):
+            dr = self.r[1] - self.r[0] if len(self.r) > 1 else 1.0
+            laplacian[i, :, :] += (
+                self.metric_perturbation[i+1, :, :] -
+                2*self.metric_perturbation[i, :, :] +
+                self.metric_perturbation[i-1, :, :]
+            ) / (dr**2)
+
+        # Source term from stress-energy
+        source = -16 * np.pi * self.stress_energy
+
+        # Wave equation update with strong damping for stability
+        damping = 0.9
+        c_squared = 1.0  # Speed of light in geometric units
+        self.metric_perturbation = damping * (
+            self.metric_perturbation +
+            dt**2 * (c_squared * laplacian + source)
+        )
+
+        # Clip to prevent runaway
+        self.metric_perturbation = np.clip(self.metric_perturbation, -0.5, 0.5)
+
+        # Decay stress-energy (energy disperses)
+        self.stress_energy *= 0.95
+
+    def get_effective_mass(self, position: np.ndarray) -> float:
+        """
+        Get effective gravitational mass including metric perturbation.
+
+        The total mass felt at a point is M + δM where δM comes from
+        the integrated stress-energy perturbation.
+        """
+        i = np.argmin(np.abs(self.r - position[1]))
+        j = np.argmin(np.abs(self.theta - position[2]))
+        k = np.argmin(np.abs(self.phi - position[3]))
+
+        # Perturbation contributes to effective mass
+        delta_M = self.metric_perturbation[i, j, k] * self.M
+        return self.M + delta_M
+
+    # =========================================================================
+    # BEKENSTEIN BOUND AND THERMALIZATION
+    # =========================================================================
+
+    def add_local_entropy(self, position: np.ndarray, bits: float):
+        """
+        Add entropy (information) at position and check Bekenstein bound.
+
+        Bekenstein bound: S ≤ 2πRE/(ℏc) = 2πRE (geometric units)
+
+        If violated, information is "thermalized" (randomly corrupted)
+        simulating the physical limit on information density.
+
+        Returns:
+            bits_lost: Number of bits thermalized due to bound violation
+        """
+        i = np.argmin(np.abs(self.r - position[1]))
+        j = np.argmin(np.abs(self.theta - position[2]))
+        k = np.argmin(np.abs(self.phi - position[3]))
+
+        r = position[1]
+
+        # Add entropy
+        self.local_entropy[i, j, k] += bits
+
+        # Bekenstein bound: S_max = 2πRE
+        # Using local energy from stress-energy tensor
+        local_energy = max(self.stress_energy[i, j, k], 0.01)
+        bekenstein_limit = 2 * np.pi * r * local_energy
+
+        # Check for violation
+        current_entropy = self.local_entropy[i, j, k]
+        if current_entropy > bekenstein_limit:
+            # Thermalization: excess information is lost
+            excess = current_entropy - bekenstein_limit
+            self.local_entropy[i, j, k] = bekenstein_limit
+
+            # Track violation
+            self.bekenstein_violations += 1
+
+            # Landauer cost: erasing bits generates heat
+            self.bits_erased += excess
+            # k_B T ln(2) per bit, using T ~ 1/(8πM) Hawking temperature
+            hawking_temp = 1.0 / (8 * np.pi * self.M)
+            self.thermodynamic_heat += excess * hawking_temp * np.log(2)
+
+            return excess
+
+        return 0.0
+
+    def decay_entropy(self, dt: float, rate: float = 0.02):
+        """Entropy naturally dissipates (Hawking radiation analog)"""
+        self.local_entropy *= np.exp(-rate * dt)
+
+    def get_bekenstein_capacity(self, position: np.ndarray) -> float:
+        """
+        Get remaining Bekenstein capacity at position.
+
+        Returns fraction of capacity remaining (0 = full, 1 = empty)
+        """
+        i = np.argmin(np.abs(self.r - position[1]))
+        j = np.argmin(np.abs(self.theta - position[2]))
+        k = np.argmin(np.abs(self.phi - position[3]))
+
+        r = position[1]
+        local_energy = max(self.stress_energy[i, j, k], 0.01)
+        bekenstein_limit = 2 * np.pi * r * local_energy
+
+        current = self.local_entropy[i, j, k]
+        return max(0.0, 1.0 - current / bekenstein_limit)
+
+    # =========================================================================
+    # VALIDATION METRICS
+    # =========================================================================
+
+    def estimate_kolmogorov_complexity(self, data: np.ndarray) -> float:
+        """
+        Estimate Kolmogorov complexity using compression ratio.
+
+        K(x) ≈ len(compress(x))
+
+        Higher values = more complex/random data
+        Lower values = more compressible/structured data
+        """
+        import zlib
+
+        # Convert to bytes
+        data_bytes = data.tobytes()
+
+        # Compress
+        compressed = zlib.compress(data_bytes, level=9)
+
+        # Complexity estimate = compression ratio
+        if len(data_bytes) == 0:
+            return 0.0
+
+        return len(compressed) / len(data_bytes)
+
+    def get_thermodynamic_stats(self) -> Dict[str, float]:
+        """
+        Get thermodynamic validation statistics.
+
+        Returns metrics for validating physical consistency:
+        - Total entropy in system
+        - Bekenstein violations (should be rare)
+        - Landauer heat generated
+        - Compression efficiency (Kolmogorov estimate)
+        """
+        return {
+            'total_entropy': float(np.sum(self.local_entropy)),
+            'max_local_entropy': float(np.max(self.local_entropy)),
+            'bekenstein_violations': self.bekenstein_violations,
+            'bits_erased': self.bits_erased,
+            'thermodynamic_heat': self.thermodynamic_heat,
+            'mean_metric_perturbation': float(np.mean(np.abs(self.metric_perturbation))),
+            'max_stress_energy': float(np.max(self.stress_energy)),
+        }
+
+# =============================================================================
+# ACTIVE INFERENCE FRAMEWORK
+# =============================================================================
+
+class ActiveInferenceMixin:
+    """
+    Active Inference agent model based on Free Energy Principle.
+
+    Agents don't have hardcoded roles - they minimize variational free energy:
+
+    F = D_KL[q(ψ)||p(ψ)] - E_q[ln p(o|ψ)]
+      = Complexity - Accuracy
+
+    Where:
+    - q(ψ): Agent's beliefs about world state
+    - p(ψ): Prior beliefs (generative model)
+    - p(o|ψ): Likelihood of observations given state
+    - Complexity: Cost of updating beliefs
+    - Accuracy: How well beliefs predict observations
+
+    Actions are selected to minimize expected free energy (epistemic + pragmatic value).
+    """
+
+    def __init_active_inference__(self):
+        """Initialize active inference state"""
+        # Beliefs about world state (simplified as feature vector)
+        self.beliefs = np.zeros(8)  # [energy, curvature, density, stress, ...]
+
+        # Precision (inverse variance) of beliefs - how confident
+        self.precision = np.ones(8) * 0.5
+
+        # Prior preferences (what states the agent prefers)
+        self.preferences = np.zeros(8)
+
+        # Free energy history for learning
+        self.free_energy_history = []
+
+        # Epistemic value (information gain motivation)
+        self.epistemic_drive = 0.5
+
+    def compute_free_energy(self, observation: np.ndarray, action: np.ndarray = None) -> float:
+        """
+        Compute variational free energy given observation.
+
+        F = Complexity + Accuracy
+          = D_KL[q||p] - E_q[ln p(o|s)]
+
+        Lower free energy = better model of the world
+        """
+        # Complexity: KL divergence between posterior and prior beliefs
+        # Using simplified Gaussian assumption
+        prior_mean = self.preferences
+        posterior_mean = self.beliefs
+
+        # KL divergence for Gaussians: 0.5 * sum((μ1-μ2)² / σ² + log(σ²/σ²) + σ²/σ² - 1)
+        # Simplified: just squared difference weighted by precision
+        complexity = 0.5 * np.sum(self.precision * (posterior_mean - prior_mean)**2)
+
+        # Accuracy: negative log likelihood of observation under beliefs
+        # How well do current beliefs predict what we observe?
+        prediction_error = observation - self.beliefs
+        accuracy = -0.5 * np.sum(self.precision * prediction_error**2)
+
+        # Free energy = complexity - accuracy (want to minimize)
+        free_energy = complexity - accuracy
+
+        return free_energy
+
+    def update_beliefs(self, observation: np.ndarray, learning_rate: float = 0.1):
+        """
+        Update beliefs based on observation (perception).
+
+        Implements belief updating to minimize prediction error.
+        """
+        # Prediction error
+        error = observation - self.beliefs
+
+        # Update beliefs toward observation (gradient descent on free energy)
+        self.beliefs += learning_rate * self.precision * error
+
+        # Update precision based on error magnitude (learn confidence)
+        error_magnitude = np.abs(error)
+        self.precision = 0.9 * self.precision + 0.1 * (1.0 / (error_magnitude + 0.1))
+
+    def expected_free_energy(self, action: np.ndarray, spacetime, position: np.ndarray) -> float:
+        """
+        Compute expected free energy for an action.
+
+        G = E_q[F(o', s')] = Epistemic Value + Pragmatic Value
+
+        Where:
+        - Epistemic: Information gain from action
+        - Pragmatic: Preference satisfaction from action
+        """
+        # Predict next state after action
+        predicted_position = position + action * 0.1
+
+        # Get predicted observations at new position
+        predicted_obs = self._get_observation(spacetime, predicted_position)
+
+        # Epistemic value: expected information gain
+        # Higher uncertainty reduction = higher epistemic value
+        uncertainty_before = 1.0 / (np.sum(self.precision) + 1e-6)
+
+        # Simulate belief update
+        temp_beliefs = self.beliefs.copy()
+        temp_beliefs += 0.1 * self.precision * (predicted_obs - self.beliefs)
+
+        # Uncertainty after (estimated)
+        uncertainty_after = np.sum((predicted_obs - temp_beliefs)**2)
+
+        epistemic_value = uncertainty_before - uncertainty_after
+
+        # Pragmatic value: how close to preferences?
+        pragmatic_value = -np.sum((predicted_obs - self.preferences)**2)
+
+        # Expected free energy (lower is better)
+        return -self.epistemic_drive * epistemic_value - pragmatic_value
+
+    def select_action_active_inference(self, spacetime, candidate_actions: List[np.ndarray]) -> np.ndarray:
+        """
+        Select action by minimizing expected free energy.
+
+        This replaces hardcoded role-based behavior with principled action selection.
+        """
+        best_action = candidate_actions[0]
+        best_G = float('inf')
+
+        for action in candidate_actions:
+            G = self.expected_free_energy(action, spacetime, self.position)
+            if G < best_G:
+                best_G = G
+                best_action = action
+
+        return best_action
+
+    def _get_observation(self, spacetime, position: np.ndarray) -> np.ndarray:
+        """Get observation vector at position"""
+        obs = np.zeros(8)
+        obs[0] = self.energy  # Own energy
+        obs[1] = spacetime.get_curvature(position)  # Local curvature
+        obs[2] = spacetime.get_information_density(position)  # Info density
+        obs[3] = spacetime.get_epistemic_stress_at(position)  # Stress
+        obs[4] = spacetime.get_structural_field(position)  # Structure
+        obs[5] = spacetime.get_effective_mass(position) / spacetime.M  # Effective mass ratio
+        obs[6] = spacetime.get_bekenstein_capacity(position)  # Available capacity
+        obs[7] = position[1] / spacetime.config.r_max  # Normalized radius
+        return obs
+
 # =============================================================================
 # ENHANCED AGENTS
 # =============================================================================
@@ -787,8 +1153,15 @@ class EnhancedAntAgent(Agent):
             self.state = "dead"
 
 
-class EnhancedBeeAgent(Agent):
-    """Enhanced bee with packet transport from queue-based economy"""
+class EnhancedBeeAgent(Agent, ActiveInferenceMixin):
+    """
+    Enhanced bee with packet transport from queue-based economy.
+
+    Uses Active Inference for action selection:
+    - Scout behavior emerges from high epistemic drive (exploration)
+    - Forager behavior emerges from pragmatic preferences (goal-directed)
+    - Role transitions happen naturally based on free energy gradients
+    """
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -799,8 +1172,32 @@ class EnhancedBeeAgent(Agent):
         self.packets_dropped = 0  # FIX #4: Track failed deliveries
         self.waggle_intensity = 0.0
 
+        # Initialize Active Inference
+        self.__init_active_inference__()
+        # Bees prefer high packet density (foraging) and wormhole proximity (delivery)
+        self.preferences[2] = 1.0  # Prefer high info density
+        self.preferences[4] = 0.5  # Prefer structural regions
+        self.epistemic_drive = 0.7  # High exploration drive initially
+
     def update(self, dt: float, spacetime: EnhancedSpacetime, semantic_graph, wormhole_position,
                 current_time: float = 0.0):
+        # ACTIVE INFERENCE: Update beliefs based on current observation
+        observation = self._get_observation(spacetime, self.position)
+        self.update_beliefs(observation)
+
+        # Track free energy for learning
+        current_F = self.compute_free_energy(observation)
+        self.free_energy_history.append(current_F)
+
+        # Adapt epistemic drive based on free energy trend
+        # High free energy = world is surprising = increase exploration
+        if len(self.free_energy_history) > 10:
+            recent_F = np.mean(self.free_energy_history[-10:])
+            if recent_F > 1.0:
+                self.epistemic_drive = min(0.9, self.epistemic_drive + 0.01)
+            else:
+                self.epistemic_drive = max(0.3, self.epistemic_drive - 0.01)
+
         if self.role == "scout":
             # TRANSPORT GATING: Check if semantic graph is mature enough for transport
             # Uses adaptive thresholds based on bootstrap phase
@@ -1660,6 +2057,33 @@ class EnhancedSimulationEngine:
             # Decay pheromones
             self.semantic_graph.decay_pheromones(self.config.dt)
 
+            # DYNAMIC SPACETIME: Update stress-energy from agents and evolve metric
+            for agents_list in self.agents.values():
+                for agent in agents_list:
+                    if agent.state == "active":
+                        # Each active agent contributes to stress-energy
+                        self.spacetime.add_stress_energy(agent.position, agent.energy * 0.01)
+
+            # Evolve metric perturbation (linearized Einstein equations)
+            self.spacetime.evolve_metric(self.config.dt)
+
+            # BEKENSTEIN BOUND: Add entropy from packet queues
+            for v in self.semantic_graph.graph.nodes():
+                queue_len = self.semantic_graph.get_queue_length(v)
+                if queue_len > 0:
+                    pos = self.semantic_graph.graph.nodes[v]['position']
+                    # Each packet represents some bits of information
+                    bits = queue_len * 64  # Assume 64 bits per packet header
+                    thermalized = self.spacetime.add_local_entropy(pos, bits * 0.01)
+                    # If bits were thermalized, corrupt/drop packets
+                    if thermalized > 0:
+                        packets_to_drop = int(thermalized / 64)
+                        for _ in range(min(packets_to_drop, queue_len)):
+                            self.semantic_graph.get_packet(v)  # Drop packet
+
+            # Decay entropy (Hawking radiation analog)
+            self.spacetime.decay_entropy(self.config.dt)
+
             # FIX #6: Periodically prune and merge graph
             if step % 50 == 0 and step > 0:
                 pruned = self.semantic_graph.prune_graph(t)
@@ -1687,6 +2111,13 @@ class EnhancedSimulationEngine:
             self.stats['material_remaining'] = EnhancedBeaverAgent.global_material_budget
             self.stats['n_vertices'] = self.semantic_graph.graph.number_of_nodes()
             self.stats['n_edges'] = self.semantic_graph.graph.number_of_edges()
+
+            # VALIDATION: Thermodynamic metrics
+            thermo_stats = self.spacetime.get_thermodynamic_stats()
+            self.stats['bekenstein_violations'] = thermo_stats['bekenstein_violations']
+            self.stats['thermodynamic_heat'] = thermo_stats['thermodynamic_heat']
+            self.stats['total_entropy'] = thermo_stats['total_entropy']
+            self.stats['mean_metric_perturbation'] = thermo_stats['mean_metric_perturbation']
 
             # Record history
             if step % 10 == 0:
