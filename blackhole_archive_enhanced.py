@@ -497,15 +497,16 @@ class EnhancedAntAgent(Agent):
             if nearby_vertex is not None:
                 # Attach to existing vertex instead of creating new one
                 vertex_id = nearby_vertex
-                # Update last_accessed time (FIX: vertices were never refreshed)
-                semantic_graph.graph.nodes[vertex_id]['last_accessed'] = current_time
+                # Use mark_vertex_accessed for proper stability tracking
+                semantic_graph.mark_vertex_accessed(vertex_id, current_time)
             else:
-                # Create new vertex
+                # Create new vertex with current_time for grace period tracking
                 vertex_id = semantic_graph.add_vertex(
                     position=self.position.copy(),
-                    salience=info_density
+                    salience=info_density,
+                    current_time=current_time
                 )
-                semantic_graph.graph.nodes[vertex_id]['last_accessed'] = current_time
+                # New vertices don't need mark_vertex_accessed - creation_time handles grace period
 
             self.current_vertex = vertex_id
             self.path_history.append(vertex_id)
@@ -527,9 +528,8 @@ class EnhancedAntAgent(Agent):
         
         # If at vertex, deposit pheromone and move to neighbor
         if self.current_vertex is not None:
-            # Update last_accessed for current vertex
-            if self.current_vertex in semantic_graph.graph:
-                semantic_graph.graph.nodes[self.current_vertex]['last_accessed'] = current_time
+            # Use mark_vertex_accessed for stability tracking (increments access count)
+            semantic_graph.mark_vertex_accessed(self.current_vertex, current_time)
 
             # Record activation for co-occurrence tracking
             semantic_graph.record_activation(self.current_vertex, current_time, self.id)
@@ -596,8 +596,8 @@ class EnhancedAntAgent(Agent):
                 node_data = semantic_graph.graph.nodes.get(next_vertex, {})
                 if 'position' in node_data:
                     self.position = node_data['position']
-                    # Update last_accessed when moving to vertex
-                    semantic_graph.graph.nodes[next_vertex]['last_accessed'] = current_time
+                    # Use mark_vertex_accessed for stability tracking when moving to vertex
+                    semantic_graph.mark_vertex_accessed(next_vertex, current_time)
                 else:
                     # Vertex missing position data, reset to exploration mode
                     self.current_vertex = None
@@ -634,9 +634,9 @@ class EnhancedAntAgent(Agent):
                     # Create a "structure vertex" linking beaver and ant layers
                     vertex_id = semantic_graph.add_vertex(
                         position=self.position.copy(),
-                        salience=0.3 + structural_value * 0.5  # Salience from structure
+                        salience=0.3 + structural_value * 0.5,  # Salience from structure
+                        current_time=current_time
                     )
-                    semantic_graph.graph.nodes[vertex_id]['last_accessed'] = current_time
                     semantic_graph.graph.nodes[vertex_id]['vertex_type'] = 'structure'
                     self.current_vertex = vertex_id
                     self.path_history.append(vertex_id)
@@ -668,11 +668,12 @@ class EnhancedBeeAgent(Agent):
         self.packets_dropped = 0  # FIX #4: Track failed deliveries
         self.waggle_intensity = 0.0
 
-    def update(self, dt: float, spacetime: EnhancedSpacetime, semantic_graph, wormhole_position):
+    def update(self, dt: float, spacetime: EnhancedSpacetime, semantic_graph, wormhole_position,
+                current_time: float = 0.0):
         if self.role == "scout":
             # TRANSPORT GATING: Check if semantic graph is mature enough for transport
-            # Requires: 3+ vertices, 2+ edges, entropy > 0.3
-            if not semantic_graph.is_transport_ready():
+            # Uses adaptive thresholds based on bootstrap phase
+            if not semantic_graph.is_transport_ready(current_time):
                 # Graph not mature - wait for structure to develop
                 # Just random walk to reduce energy consumption
                 random_step = 0.02 * np.random.randn(4)
@@ -700,6 +701,12 @@ class EnhancedBeeAgent(Agent):
 
         elif self.role == "forager":
             if self.packet is None and self.target_vertex is not None:
+                # Safety check: verify target vertex still exists (may have been pruned)
+                if self.target_vertex not in semantic_graph.graph:
+                    self.target_vertex = None
+                    self.role = "scout"
+                    return
+
                 # Move to target vertex
                 target_pos = semantic_graph.graph.nodes[self.target_vertex]['position']
 
@@ -778,6 +785,12 @@ class SemanticGraph:
     PHASE_2_MATURITY_EDGES = 5
     MIN_ENTROPY_FOR_TRANSPORT = 0.3
 
+    # Bootstrap phase parameters
+    BOOTSTRAP_DURATION = 30.0  # Time units for bootstrap phase
+    BOOTSTRAP_EDGE_PROB_MULTIPLIER = 5.0  # Higher edge probability during bootstrap
+    VERTEX_GRACE_PERIOD = 15.0  # New vertices protected from pruning for this duration
+    MIN_STABLE_VERTICES = 8  # Minimum vertices to maintain for stability
+
     def __init__(self):
         self.graph = nx.DiGraph()
         self.pheromones = {}  # (v1, v2) -> strength
@@ -789,17 +802,56 @@ class SemanticGraph:
         self.vertex_activations = {}  # vertex_id -> list of (time, agent_id)
         self.co_occurrence_counts = {}  # (v1, v2) -> count
 
-    def add_vertex(self, position: np.ndarray, salience: float) -> int:
-        """Add vertex to graph with max vertex limit"""
+        # Bootstrap phase tracking
+        self.creation_time = 0.0  # When the graph was initialized
+        self.is_bootstrapped = False  # Whether bootstrap phase is complete
+
+        # Vertex stability tracking
+        self.vertex_creation_times = {}  # vertex_id -> creation_time
+        self.vertex_access_counts = {}  # vertex_id -> access count for stability scoring
+        self.stable_vertex_set = set()  # Vertices that have proven stable
+
+    def set_creation_time(self, time: float):
+        """Set the graph creation time for bootstrap phase tracking"""
+        self.creation_time = time
+
+    def get_graph_age(self, current_time: float) -> float:
+        """Get age of graph since creation"""
+        return current_time - self.creation_time
+
+    def is_in_bootstrap_phase(self, current_time: float) -> bool:
+        """Check if graph is still in bootstrap phase"""
+        if self.is_bootstrapped:
+            return False
+        age = self.get_graph_age(current_time)
+        if age >= self.BOOTSTRAP_DURATION:
+            self.is_bootstrapped = True
+            return False
+        return True
+
+    def add_vertex(self, position: np.ndarray, salience: float, current_time: float = 0.0) -> int:
+        """Add vertex to graph with max vertex limit and stability tracking"""
         # Enforce maximum vertices
         if self.graph.number_of_nodes() >= self.MAX_VERTICES:
-            # Find lowest salience vertex to replace
-            min_sal_vertex = min(self.graph.nodes(),
+            # Find lowest salience vertex to replace (excluding stable and grace period vertices)
+            candidates = []
+            for v in self.graph.nodes():
+                # Skip vertices in grace period
+                creation_time = self.vertex_creation_times.get(v, 0.0)
+                if current_time - creation_time < self.VERTEX_GRACE_PERIOD:
+                    continue
+                # Skip stable vertices
+                if v in self.stable_vertex_set:
+                    continue
+                candidates.append(v)
+
+            if not candidates:
+                return -1  # No replaceable vertices
+
+            min_sal_vertex = min(candidates,
                                   key=lambda v: self.graph.nodes[v].get('salience', 0))
             if self.graph.nodes[min_sal_vertex].get('salience', 0) < salience:
-                self.graph.remove_node(min_sal_vertex)
-                if min_sal_vertex in self.packet_queues:
-                    del self.packet_queues[min_sal_vertex]
+                self._remove_vertex(min_sal_vertex)
             else:
                 return -1  # Reject new vertex
 
@@ -807,10 +859,38 @@ class SemanticGraph:
         self.next_vertex_id += 1
 
         self.graph.add_node(vertex_id, position=position, salience=salience,
-                           created_at=0.0, last_accessed=0.0)
+                           created_at=current_time, last_accessed=current_time)
         self.packet_queues[vertex_id] = []  # Initialize packet queue
         self.vertex_activations[vertex_id] = []
+        self.vertex_creation_times[vertex_id] = current_time
+        self.vertex_access_counts[vertex_id] = 0
+
         return vertex_id
+
+    def _remove_vertex(self, vertex_id: int):
+        """Internal method to cleanly remove a vertex"""
+        if vertex_id in self.graph:
+            self.graph.remove_node(vertex_id)
+        if vertex_id in self.packet_queues:
+            del self.packet_queues[vertex_id]
+        if vertex_id in self.vertex_activations:
+            del self.vertex_activations[vertex_id]
+        if vertex_id in self.vertex_creation_times:
+            del self.vertex_creation_times[vertex_id]
+        if vertex_id in self.vertex_access_counts:
+            del self.vertex_access_counts[vertex_id]
+        if vertex_id in self.stable_vertex_set:
+            self.stable_vertex_set.discard(vertex_id)
+
+    def mark_vertex_accessed(self, vertex_id: int, current_time: float):
+        """Mark vertex as accessed and update stability tracking"""
+        if vertex_id in self.graph:
+            self.graph.nodes[vertex_id]['last_accessed'] = current_time
+            self.vertex_access_counts[vertex_id] = self.vertex_access_counts.get(vertex_id, 0) + 1
+
+            # Promote to stable if accessed frequently
+            if self.vertex_access_counts[vertex_id] >= 10:
+                self.stable_vertex_set.add(vertex_id)
 
     def add_packet(self, vertex_id: int, packet: dict) -> bool:
         """
@@ -859,26 +939,49 @@ class SemanticGraph:
             if self.pheromones[edge] < 0.01:
                 del self.pheromones[edge]
 
-    def prune_graph(self, current_time: float, max_age: float = 50.0, min_vertices: int = 10):
+    def prune_graph(self, current_time: float, max_age: float = 50.0, min_vertices: int = None):
         """
-        FIX #6: Prune vertices that haven't been accessed recently.
+        Prune vertices that haven't been accessed recently.
         Cost of memory - old, unused beliefs are forgotten.
 
         Protected vertices (never pruned):
+        - Vertices in grace period (recently created)
+        - Vertices marked as stable
         - Vertices with packets in queue
         - Vertices with high connectivity (degree > 3)
         - Vertices with high salience (> 0.7)
-        - If graph would drop below min_vertices
+        - If graph would drop below MIN_STABLE_VERTICES
+
+        During bootstrap phase, pruning is completely disabled to allow
+        the graph to establish stable structure.
         """
+        # Use class constant if not specified
+        if min_vertices is None:
+            min_vertices = self.MIN_STABLE_VERTICES
+
+        # During bootstrap, no pruning at all
+        if self.is_in_bootstrap_phase(current_time):
+            return 0
+
         if self.graph.number_of_nodes() <= min_vertices:
             return 0  # Don't prune if already at minimum
 
         vertices_to_remove = []
         for v in self.graph.nodes():
-            # Check age
+            # Check grace period protection
+            creation_time = self.vertex_creation_times.get(v, 0.0)
+            vertex_age = current_time - creation_time
+            if vertex_age < self.VERTEX_GRACE_PERIOD:
+                continue  # In grace period, keep
+
+            # Check stable vertex protection
+            if v in self.stable_vertex_set:
+                continue  # Marked stable, keep
+
+            # Check access age
             last_accessed = self.graph.nodes[v].get('last_accessed', 0.0)
-            age = current_time - last_accessed
-            if age <= max_age:
+            access_age = current_time - last_accessed
+            if access_age <= max_age:
                 continue  # Recently accessed, keep
 
             # Check protections
@@ -900,9 +1003,7 @@ class SemanticGraph:
         vertices_to_remove = vertices_to_remove[:max_to_remove]
 
         for v in vertices_to_remove:
-            self.graph.remove_node(v)
-            if v in self.packet_queues:
-                del self.packet_queues[v]
+            self._remove_vertex(v)
 
         return len(vertices_to_remove)
 
@@ -1012,15 +1113,25 @@ class SemanticGraph:
     def add_edge_conditional(self, v1: int, v2: int, pheromone: float,
                               current_time: float, nearby_structures: int = 0) -> bool:
         """
-        Conditional edge formation based on co-activation.
+        Conditional edge formation based on co-activation with phase-based thresholds.
 
-        Edge probability formula:
+        During bootstrap phase:
+        - Higher base probability (5x multiplier)
+        - Spatial proximity alone can create edges (no co-occurrence required)
+        - Encourages rapid graph structure formation
+
+        After bootstrap:
+        - Require co-occurrence (temporal overlap)
+        - Standard probability formula:
             edge_prob = min(salience1, salience2) × co_occurrence_count × structure_bonus
-
-        No edge without temporal overlap or shared packet reference.
-        Structure bonus: 0.05 + 0.05 × nearby_structures
+        - Structure bonus: 0.05 + 0.05 × nearby_structures
         """
         if v1 not in self.graph or v2 not in self.graph:
+            return False
+
+        # Already connected - just reinforce pheromone
+        if self.graph.has_edge(v1, v2):
+            self.pheromones[(v1, v2)] = self.pheromones.get((v1, v2), 0) + pheromone * 0.1
             return False
 
         # Get saliences
@@ -1028,16 +1139,46 @@ class SemanticGraph:
         sal2 = self.graph.nodes[v2].get('salience', 0.5)
         min_salience = min(sal1, sal2)
 
-        # Require co-occurrence (temporal overlap)
-        co_occurrence = self.compute_co_occurrence(v1, v2, current_time)
-        if co_occurrence == 0:
-            return False  # No edge without temporal overlap
+        # Check if in bootstrap phase
+        in_bootstrap = self.is_in_bootstrap_phase(current_time)
 
-        # Structure-dependent base probability
-        base_prob = 0.05 + 0.05 * nearby_structures
+        if in_bootstrap:
+            # BOOTSTRAP PHASE: More permissive edge formation
+            # Allow edges based on spatial proximity alone
+            pos1 = self.graph.nodes[v1].get('position')
+            pos2 = self.graph.nodes[v2].get('position')
 
-        # Final edge probability
-        edge_prob = min_salience * (1 + 0.1 * co_occurrence) * base_prob
+            spatial_proximity_bonus = 0.0
+            if pos1 is not None and pos2 is not None:
+                try:
+                    spatial_dist = np.linalg.norm(pos1[1:] - pos2[1:])
+                    # Closer vertices get higher bonus (inverse distance)
+                    spatial_proximity_bonus = 1.0 / (1.0 + spatial_dist)
+                except (TypeError, ValueError):
+                    pass
+
+            # Bootstrap base probability is much higher
+            base_prob = (0.1 + 0.1 * nearby_structures) * self.BOOTSTRAP_EDGE_PROB_MULTIPLIER
+
+            # Co-occurrence still helps but not required
+            co_occurrence = self.compute_co_occurrence(v1, v2, current_time)
+            co_occurrence_bonus = 1.0 + 0.2 * co_occurrence
+
+            # Final bootstrap probability
+            edge_prob = min_salience * co_occurrence_bonus * (base_prob + spatial_proximity_bonus)
+
+        else:
+            # POST-BOOTSTRAP: Standard conditional edge formation
+            # Require co-occurrence (temporal overlap)
+            co_occurrence = self.compute_co_occurrence(v1, v2, current_time)
+            if co_occurrence == 0:
+                return False  # No edge without temporal overlap
+
+            # Structure-dependent base probability
+            base_prob = 0.05 + 0.05 * nearby_structures
+
+            # Final edge probability
+            edge_prob = min_salience * (1 + 0.1 * co_occurrence) * base_prob
 
         if np.random.random() < edge_prob:
             self.add_edge(v1, v2, pheromone)
@@ -1088,40 +1229,93 @@ class SemanticGraph:
         max_entropy = np.log(n + 1)
         return entropy / max_entropy if max_entropy > 0 else 0.0
 
-    def is_transport_ready(self) -> bool:
+    def is_transport_ready(self, current_time: float = None) -> bool:
         """
         Check if semantic graph is mature enough for transport.
 
-        Requirements:
+        Adaptive thresholds based on graph maturity:
+        - During bootstrap: Lower thresholds to encourage early transport
+        - After bootstrap: Standard thresholds require stable structure
+
+        Requirements (standard):
         - At least 3 vertices
         - At least 2 edges (PHASE_1_MATURITY_EDGES)
         - Graph entropy > MIN_ENTROPY_FOR_TRANSPORT
+
+        Requirements (bootstrap):
+        - At least 3 vertices
+        - At least 1 edge
+        - Some packets in queues OR stable vertices exist
         """
         n_vertices = self.graph.number_of_nodes()
         n_edges = self.graph.number_of_edges()
         entropy = self.compute_entropy()
 
-        return (n_vertices >= 3 and
-                n_edges >= self.PHASE_1_MATURITY_EDGES and
-                entropy >= self.MIN_ENTROPY_FOR_TRANSPORT)
+        # Check bootstrap phase
+        in_bootstrap = current_time is not None and self.is_in_bootstrap_phase(current_time)
 
-    def get_graph_maturity_phase(self) -> int:
+        if in_bootstrap:
+            # During bootstrap: Lower thresholds
+            # Allow transport if we have basic structure
+            has_packets = self.get_total_queue_length() > 0
+            has_stable_vertices = len(self.stable_vertex_set) >= 2
+
+            return (n_vertices >= 3 and
+                    n_edges >= 1 and
+                    (has_packets or has_stable_vertices or entropy >= 0.1))
+        else:
+            # Standard thresholds
+            return (n_vertices >= 3 and
+                    n_edges >= self.PHASE_1_MATURITY_EDGES and
+                    entropy >= self.MIN_ENTROPY_FOR_TRANSPORT)
+
+    def get_graph_maturity_phase(self, current_time: float = None) -> int:
         """
         Get current graph maturity phase.
 
         Phase 0: Immature (< 3 vertices or < 2 edges)
         Phase 1: Basic transport enabled (2+ edges, entropy > 0.3)
         Phase 2: Full transport (5+ edges)
+        Phase 3: Mature stable graph (many stable vertices, high connectivity)
         """
+        n_vertices = self.graph.number_of_nodes()
         n_edges = self.graph.number_of_edges()
+        n_stable = len(self.stable_vertex_set)
 
-        if not self.is_transport_ready():
+        if not self.is_transport_ready(current_time):
             return 0
 
+        # Phase 3: Mature stable graph
+        if n_edges >= 10 and n_stable >= 5:
+            return 3
+
+        # Phase 2: Full transport
         if n_edges >= self.PHASE_2_MATURITY_EDGES:
             return 2
 
         return 1
+
+    def get_transport_priority_multiplier(self, current_time: float = None) -> float:
+        """
+        Get priority multiplier for transport based on graph state.
+
+        Higher multiplier when graph is healthy and has queued packets.
+        Lower multiplier when graph is struggling.
+        """
+        phase = self.get_graph_maturity_phase(current_time)
+        n_queued = self.get_total_queue_length()
+        n_stable = len(self.stable_vertex_set)
+
+        # Base multiplier from phase
+        phase_multiplier = {0: 0.5, 1: 1.0, 2: 1.5, 3: 2.0}.get(phase, 1.0)
+
+        # Bonus for queued packets (encourages clearing queue)
+        queue_bonus = min(1.0, n_queued * 0.1)
+
+        # Bonus for stable vertices (healthy graph)
+        stability_bonus = min(0.5, n_stable * 0.05)
+
+        return phase_multiplier + queue_bonus + stability_bonus
 
 # =============================================================================
 # ENHANCED SIMULATION ENGINE
@@ -1246,6 +1440,9 @@ class EnhancedSimulationEngine:
         """
         self.logger.info(f"Seeding semantic graph with {n_initial_vertices} initial vertices")
 
+        # Initialize bootstrap phase - graph creation time is 0.0
+        self.semantic_graph.set_creation_time(0.0)
+
         for i in range(n_initial_vertices):
             # Create vertices near event horizon where curvature is high
             r = self.spacetime.r_s + 0.5 + np.random.rand() * 5  # r in [rs+0.5, rs+5.5]
@@ -1304,7 +1501,8 @@ class EnhancedSimulationEngine:
 
             for bee in self.agents['bees']:
                 if bee.state == "active":
-                    bee.update(self.config.dt, self.spacetime, self.semantic_graph, self.wormhole_position)
+                    bee.update(self.config.dt, self.spacetime, self.semantic_graph,
+                               self.wormhole_position, current_time=t)
 
             # FIX #5: Decay structural field (maintenance cost)
             self.spacetime.decay_structural_field(self.config.dt)
