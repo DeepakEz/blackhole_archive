@@ -44,6 +44,9 @@ import logging
 from tqdm import tqdm
 import uuid
 
+# Note: Full Lyapunov stability monitoring requires epistemic layer
+# (available in blackhole_archive_production.py with --engine production)
+
 # Import base classes
 import sys
 sys.path.append('/mnt/user-data/outputs')
@@ -1894,9 +1897,16 @@ class EnhancedSimulationEngine:
             'n_edges': 0,
             'energy_history': [],
             'vertices_history': [],
-            'structures_history': []
+            'structures_history': [],
+            'stability_rate': [],
+            'lyapunov_V': []
         }
-        
+
+        # Simple stability tracking (full Lyapunov requires epistemic layer)
+        self.stability_history = []
+        self.consecutive_violations = 0
+        self.last_energy = None
+
         self.logger.info("Enhanced simulation engine initialized")
     
     def _setup_logging(self):
@@ -2124,11 +2134,27 @@ class EnhancedSimulationEngine:
             self.stats['total_entropy'] = thermo_stats['total_entropy']
             self.stats['mean_metric_perturbation'] = thermo_stats['mean_metric_perturbation']
 
+            # Simple stability check: energy should not decay too fast
+            current_energy = self.stats['total_energy']
+            is_stable = True
+            if self.last_energy is not None:
+                energy_decay_rate = (self.last_energy - current_energy) / self.config.dt
+                # Unstable if energy decays more than 5% per unit time
+                if energy_decay_rate > 0.05 * self.last_energy:
+                    is_stable = False
+                    self.consecutive_violations += 1
+                else:
+                    self.consecutive_violations = 0
+            self.last_energy = current_energy
+            self.stability_history.append(is_stable)
+
             # Record history
             if step % 10 == 0:
                 self.stats['energy_history'].append(self.stats['total_energy'])
                 self.stats['vertices_history'].append(self.stats['n_vertices'])
                 self.stats['structures_history'].append(self.stats['n_structures_built'])
+                stable_count = sum(1 for s in self.stability_history if s)
+                self.stats['stability_rate'].append(stable_count / max(1, len(self.stability_history)))
 
             # Log
             if step % 100 == 0:
