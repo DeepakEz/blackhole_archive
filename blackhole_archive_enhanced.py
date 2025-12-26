@@ -1019,82 +1019,87 @@ class EnhancedAntAgent(Agent):
         
         # If at vertex, deposit pheromone and move to neighbor
         if self.current_vertex is not None:
-            # Use mark_vertex_accessed for stability tracking (increments access count)
-            semantic_graph.mark_vertex_accessed(self.current_vertex, current_time)
-
-            # Record activation for co-occurrence tracking
-            semantic_graph.record_activation(self.current_vertex, current_time, self.id)
-
-            # Count nearby structures for structure-dependent edge probability
-            nearby_structures = len(self._find_all_nearby_vertices(semantic_graph, distance_threshold=3.0))
-
-            # CONDITIONAL EDGE POLICY 1: Temporal adjacency - connect sequential discoveries
-            # Now requires co-activation, not just adjacency
-            if len(self.path_history) > 1:
-                prev_vertex = self.path_history[-2]
-                if prev_vertex in semantic_graph.graph and self.current_vertex in semantic_graph.graph:
-                    # Use conditional edge formation (requires co-occurrence)
-                    # First ensure both vertices have activation records
-                    semantic_graph.record_activation(prev_vertex, current_time - 0.1, self.id)
-                    if semantic_graph.add_edge_conditional(prev_vertex, self.current_vertex, 1.0,
-                                                           current_time, nearby_structures):
-                        semantic_graph.add_edge(self.current_vertex, prev_vertex, pheromone=1.0)
-                        self.pheromone_deposits += 2
-
-            # CONDITIONAL EDGE POLICY 2: Co-occurrence - connect vertices discovered close in time
-            # Only creates edges if co-occurrence count > 0 (temporal overlap requirement)
-            recent_discoveries = [v for v, t in self.discovery_times.items()
-                                  if current_time - t < 5.0 and v != self.current_vertex
-                                  and v in semantic_graph.graph]
-            for other_vertex in recent_discoveries[-3:]:  # Limit to 3 most recent
-                if not semantic_graph.graph.has_edge(self.current_vertex, other_vertex):
-                    # Conditional edge - requires co-occurrence
-                    if semantic_graph.add_edge_conditional(self.current_vertex, other_vertex, 0.5,
-                                                           current_time, nearby_structures):
-                        semantic_graph.add_edge(other_vertex, self.current_vertex, pheromone=0.5)
-
-            # CONDITIONAL EDGE POLICY 3: Spatial proximity - connect to nearby vertices
-            # Structure-dependent probability: 0.05 + 0.05 * nearby_structures
-            for nearby_v in self._find_all_nearby_vertices(semantic_graph, distance_threshold=3.0):
-                if nearby_v != self.current_vertex and not semantic_graph.graph.has_edge(self.current_vertex, nearby_v):
-                    # Record activation for nearby vertex to enable co-occurrence
-                    semantic_graph.record_activation(nearby_v, current_time, self.id)
-                    if semantic_graph.add_edge_conditional(self.current_vertex, nearby_v, 0.3,
-                                                           current_time, nearby_structures):
-                        semantic_graph.add_edge(nearby_v, self.current_vertex, pheromone=0.3)
-
-            # Choose next vertex - FIX: Use both successors and predecessors for DiGraph
-            successors = set(semantic_graph.graph.successors(self.current_vertex))
-            predecessors = set(semantic_graph.graph.predecessors(self.current_vertex))
-            neighbors = list(successors | predecessors)
-
-            if neighbors:
-                # Follow pheromones probabilistically
-                pheromones = []
-                for n in neighbors:
-                    # Check both edge directions for pheromone
-                    p1 = semantic_graph.get_pheromone((self.current_vertex, n))
-                    p2 = semantic_graph.get_pheromone((n, self.current_vertex))
-                    pheromones.append(max(p1, p2))
-                probs = np.array(pheromones) + 0.1  # Add baseline
-                probs /= probs.sum()
-
-                next_vertex = np.random.choice(neighbors, p=probs)
-                self.current_vertex = next_vertex
-                self.path_history.append(next_vertex)
-
-                # Update position (with safety check)
-                node_data = semantic_graph.graph.nodes.get(next_vertex, {})
-                if 'position' in node_data:
-                    self.position = node_data['position']
-                    # Use mark_vertex_accessed for stability tracking when moving to vertex
-                    semantic_graph.mark_vertex_accessed(next_vertex, current_time)
-                else:
-                    # Vertex missing position data, reset to exploration mode
-                    self.current_vertex = None
-            else:
-                # No neighbors, explore
+            # SAFETY CHECK: Verify vertex still exists (may have been pruned)
+            if self.current_vertex not in semantic_graph.graph:
                 self.current_vertex = None
+                # Skip to exploration mode below
+            else:
+                # Use mark_vertex_accessed for stability tracking (increments access count)
+                semantic_graph.mark_vertex_accessed(self.current_vertex, current_time)
+
+                # Record activation for co-occurrence tracking
+                semantic_graph.record_activation(self.current_vertex, current_time, self.id)
+
+                # Count nearby structures for structure-dependent edge probability
+                nearby_structures = len(self._find_all_nearby_vertices(semantic_graph, distance_threshold=3.0))
+
+                # CONDITIONAL EDGE POLICY 1: Temporal adjacency - connect sequential discoveries
+                # Now requires co-activation, not just adjacency
+                if len(self.path_history) > 1:
+                    prev_vertex = self.path_history[-2]
+                    if prev_vertex in semantic_graph.graph and self.current_vertex in semantic_graph.graph:
+                        # Use conditional edge formation (requires co-occurrence)
+                        # First ensure both vertices have activation records
+                        semantic_graph.record_activation(prev_vertex, current_time - 0.1, self.id)
+                        if semantic_graph.add_edge_conditional(prev_vertex, self.current_vertex, 1.0,
+                                                               current_time, nearby_structures):
+                            semantic_graph.add_edge(self.current_vertex, prev_vertex, pheromone=1.0)
+                            self.pheromone_deposits += 2
+
+                # CONDITIONAL EDGE POLICY 2: Co-occurrence - connect vertices discovered close in time
+                # Only creates edges if co-occurrence count > 0 (temporal overlap requirement)
+                recent_discoveries = [v for v, t in self.discovery_times.items()
+                                      if current_time - t < 5.0 and v != self.current_vertex
+                                      and v in semantic_graph.graph]
+                for other_vertex in recent_discoveries[-3:]:  # Limit to 3 most recent
+                    if not semantic_graph.graph.has_edge(self.current_vertex, other_vertex):
+                        # Conditional edge - requires co-occurrence
+                        if semantic_graph.add_edge_conditional(self.current_vertex, other_vertex, 0.5,
+                                                               current_time, nearby_structures):
+                            semantic_graph.add_edge(other_vertex, self.current_vertex, pheromone=0.5)
+
+                # CONDITIONAL EDGE POLICY 3: Spatial proximity - connect to nearby vertices
+                # Structure-dependent probability: 0.05 + 0.05 * nearby_structures
+                for nearby_v in self._find_all_nearby_vertices(semantic_graph, distance_threshold=3.0):
+                    if nearby_v != self.current_vertex and not semantic_graph.graph.has_edge(self.current_vertex, nearby_v):
+                        # Record activation for nearby vertex to enable co-occurrence
+                        semantic_graph.record_activation(nearby_v, current_time, self.id)
+                        if semantic_graph.add_edge_conditional(self.current_vertex, nearby_v, 0.3,
+                                                               current_time, nearby_structures):
+                            semantic_graph.add_edge(nearby_v, self.current_vertex, pheromone=0.3)
+
+                # Choose next vertex - FIX: Use both successors and predecessors for DiGraph
+                successors = set(semantic_graph.graph.successors(self.current_vertex))
+                predecessors = set(semantic_graph.graph.predecessors(self.current_vertex))
+                neighbors = list(successors | predecessors)
+
+                if neighbors:
+                    # Follow pheromones probabilistically
+                    pheromones = []
+                    for n in neighbors:
+                        # Check both edge directions for pheromone
+                        p1 = semantic_graph.get_pheromone((self.current_vertex, n))
+                        p2 = semantic_graph.get_pheromone((n, self.current_vertex))
+                        pheromones.append(max(p1, p2))
+                    probs = np.array(pheromones) + 0.1  # Add baseline
+                    probs /= probs.sum()
+
+                    next_vertex = np.random.choice(neighbors, p=probs)
+                    self.current_vertex = next_vertex
+                    self.path_history.append(next_vertex)
+
+                    # Update position (with safety check)
+                    node_data = semantic_graph.graph.nodes.get(next_vertex, {})
+                    if 'position' in node_data:
+                        self.position = node_data['position']
+                        # Use mark_vertex_accessed for stability tracking when moving to vertex
+                        semantic_graph.mark_vertex_accessed(next_vertex, current_time)
+                    else:
+                        # Vertex missing position data, reset to exploration mode
+                        self.current_vertex = None
+                else:
+                    # No neighbors, explore
+                    self.current_vertex = None
 
         # Random walk if not at vertex - with intelligent exploration
         if self.current_vertex is None:
