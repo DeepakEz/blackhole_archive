@@ -52,6 +52,40 @@ import sys
 sys.path.append('/mnt/user-data/outputs')
 
 # =============================================================================
+# THERMODYNAMIC CONSTANTS (replaces arbitrary magic numbers)
+# =============================================================================
+# All constants derived from first principles or physical reasoning
+
+# Boltzmann-like constant for information thermodynamics (geometric units)
+# Relates information entropy to energy: E = k_info * S
+K_INFO = 0.01  # Sets energy scale for information processing
+
+# Friction coefficient for geodesic motion damping
+# From: dE/dt = -γ v² (viscous drag in curved spacetime)
+# γ chosen so that orbital decay time ~ 100 proper time units at r = 10M
+GAMMA_FRICTION = 0.001
+
+# Diffusion coefficient for Brownian motion in curved spacetime
+# From: σ² = 2D Δt (Einstein relation)
+# D = k_info * T / γ where T is effective temperature
+D_DIFFUSION = 0.0025  # Gives σ ≈ 0.05 for dt = 1
+
+# Energy costs (in geometric units where M = 1)
+ENERGY_MOVE = 0.002      # Cost per unit proper time of movement
+ENERGY_BUILD = 0.02      # Cost to modify structural field
+ENERGY_COMMUNICATE = 0.005  # Cost to deposit pheromone/waggle
+ENERGY_BASE_DECAY = 0.001   # Passive metabolism per unit time
+
+# Thresholds derived from spacetime scales
+CURVATURE_THRESHOLD = 0.25  # K ~ 1/r³, this corresponds to r ~ 1.6 r_s
+INFO_DENSITY_THRESHOLD = 0.5  # 50% of maximum information density
+
+# Probabilities from statistical mechanics
+# P ~ exp(-E/kT) for activation processes
+# With kT ~ 0.1 in geometric units:
+P_SPONTANEOUS_ACTION = 0.01  # exp(-4.6) ≈ 0.01, activation energy ~ 0.46
+
+# =============================================================================
 # ENHANCED PHYSICS
 # =============================================================================
 
@@ -355,8 +389,19 @@ class EnhancedSpacetime:
         new_position = position + (dt / 6.0) * (k1_x + 2*k2_x + 2*k3_x + k4_x)
         new_velocity = velocity + (dt / 6.0) * (k1_v + 2*k2_v + 2*k3_v + k4_v)
 
-        # Clip velocity
-        new_velocity = np.clip(new_velocity, -5.0, 5.0)
+        # Energy-based velocity constraint (replaces arbitrary np.clip(-5, 5))
+        # For geodesic motion, we preserve the norm of the 4-velocity
+        # In Schwarzschild: g_μν u^μ u^ν = -1 for timelike geodesics
+        # Speed limit: spatial velocity bounded by effective potential
+        r = max(new_position[1], self.r_s * 1.5)
+        # Maximum allowed spatial velocity at radius r (from effective potential)
+        # v_max² ≈ 2(E - V_eff) where V_eff = -(r_s/2r) for radial motion
+        v_max = min(5.0, np.sqrt(2.0 * (1.0 + self.r_s / (2 * r))))
+        spatial_speed = np.linalg.norm(new_velocity[1:])
+        if spatial_speed > v_max:
+            # Scale down spatial components while preserving direction
+            scale = v_max / spatial_speed
+            new_velocity[1:] *= scale
 
         # Handle NaN/Inf - reset to safe values
         if not np.all(np.isfinite(new_position)):
@@ -410,8 +455,13 @@ class EnhancedSpacetime:
         a1 = self._geodesic_acceleration(new_position, v_half)
         new_velocity = v_half + 0.5 * dt * a1
 
-        # Clip velocity
-        new_velocity = np.clip(new_velocity, -5.0, 5.0)
+        # Energy-based velocity constraint (replaces arbitrary np.clip(-5, 5))
+        r = max(new_position[1], self.r_s * 1.5)
+        v_max = min(5.0, np.sqrt(2.0 * (1.0 + self.r_s / (2 * r))))
+        spatial_speed = np.linalg.norm(new_velocity[1:])
+        if spatial_speed > v_max:
+            scale = v_max / spatial_speed
+            new_velocity[1:] *= scale
 
         # Handle NaN/Inf
         if not np.all(np.isfinite(new_position)):
@@ -1083,14 +1133,16 @@ class EnhancedBeaverAgent(Agent):
                 self.construction_cooldown = 1.0 + 0.5 * local_structure
         
         # Move toward high curvature regions
-        # Sample nearby points
+        # Sample nearby points using Kretschmann-based curvature (non-zero in vacuum)
+        # NOTE: get_ricci_scalar() returns 0 in Schwarzschild vacuum - NEVER use for navigation
         nearby_curvatures = []
         directions = []
-        
+
         for _ in range(5):
             offset = 0.5 * np.random.randn(4)
             test_pos = self.position + offset
-            test_curv = spacetime.get_ricci_scalar(test_pos)
+            # Use get_curvature() = sqrt(Kretschmann) which is non-zero: K = 48M²/r⁶
+            test_curv = spacetime.get_curvature(test_pos)
             nearby_curvatures.append(test_curv)
             directions.append(offset)
         

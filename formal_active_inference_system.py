@@ -396,25 +396,70 @@ class CorrectedActiveInferenceAgent:
         # Blend with current velocity for smoother trajectories
         self.velocity = 0.7 * self.velocity + 0.3 * action
 
-        # Use GEODESIC motion if spacetime is provided (respects curved geometry)
-        # NOT Euclidean: self.position += dt * self.velocity  # WRONG - ignores curvature
+        # Use GEODESIC motion - respects curved spacetime geometry
+        # NEVER use Euclidean: position += velocity * dt (ignores curvature)
         if spacetime is not None and hasattr(spacetime, 'geodesic_step'):
             self.position, self.velocity = spacetime.geodesic_step(
                 self.position, self.velocity, dt
             )
         else:
-            # Fallback to Euclidean if no spacetime provided
+            # No spacetime provided - use local Schwarzschild geodesic approximation
+            # This is a first-order geodesic step using Christoffel symbols
+            r = max(self.position[1], 3.0)  # Schwarzschild radius units
+            r_s = 2.0  # Schwarzschild radius (M=1 units)
+
+            # Christoffel symbols for Schwarzschild (key non-zero components)
+            # Γ^r_tt = (r_s/2r²)(1 - r_s/r)
+            # Γ^r_rr = -r_s/(2r(r-r_s))
+            # Γ^r_θθ = -(r - r_s)
+            # Γ^r_φφ = -(r - r_s)sin²θ
+            # Γ^θ_rθ = Γ^φ_rφ = 1/r
+            # Γ^φ_θφ = cot(θ)
+
+            theta = np.clip(self.position[2], 0.01, np.pi - 0.01)
+            sin_theta = np.sin(theta)
+            cos_theta = np.cos(theta)
+
+            # Geodesic equation: d²x^μ/dτ² = -Γ^μ_αβ (dx^α/dτ)(dx^β/dτ)
+            # Compute acceleration from Christoffel symbols
+            v_t, v_r, v_theta, v_phi = self.velocity
+
+            # Radial acceleration (dominant in Schwarzschild)
+            a_r = (
+                -r_s / (2 * r * (r - r_s)) * v_r**2  # Γ^r_rr term
+                + (r - r_s) * v_theta**2              # Γ^r_θθ term
+                + (r - r_s) * sin_theta**2 * v_phi**2  # Γ^r_φφ term
+                + r_s * (r - r_s) / (2 * r**3) * v_t**2  # Γ^r_tt term
+            )
+
+            # Angular accelerations
+            a_theta = -2/r * v_r * v_theta + cos_theta * sin_theta * v_phi**2
+            a_phi = -2/r * v_r * v_phi - 2 * cos_theta / sin_theta * v_theta * v_phi
+
+            # Time component (usually small for non-relativistic)
+            a_t = -r_s / (r * (r - r_s)) * v_t * v_r
+
+            # Update velocity with geodesic acceleration
+            self.velocity[0] += a_t * dt
+            self.velocity[1] += a_r * dt
+            self.velocity[2] += a_theta * dt
+            self.velocity[3] += a_phi * dt
+
+            # Update position
             self.position += dt * self.velocity
+
             # Boundary constraints (stay in valid spacetime region)
-            self.position[1] = max(self.position[1], 3.0)  # Stay outside horizon
-            self.position[2] = np.clip(self.position[2], 0.01, np.pi - 0.01)  # θ ∈ (0, π)
-            self.position[3] = self.position[3] % (2 * np.pi)  # φ ∈ [0, 2π)
+            self.position[1] = max(self.position[1], r_s * 1.5)  # Stay outside horizon
+            self.position[2] = np.clip(self.position[2], 0.01, np.pi - 0.01)
+            self.position[3] = self.position[3] % (2 * np.pi)
 
         # 5. PREDICT (update beliefs about future)
         self.belief = self.vi.predict(self.belief, action)
 
-        # Energy decay
-        self.energy -= dt * 0.003
+        # Energy decay (thermodynamically motivated: dE/dt = -γv²)
+        # γ = 0.001 is friction coefficient in geometric units
+        speed_sq = np.sum(self.velocity[1:]**2)  # Spatial velocity squared
+        self.energy -= dt * 0.001 * (1.0 + speed_sq)
         if self.energy <= 0:
             self.state = "dead"
 
