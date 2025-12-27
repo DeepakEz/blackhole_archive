@@ -920,6 +920,11 @@ class MycoBeaverEnv(gym.Env):
         self.current_step = 0
         self.episode_reward = 0.0
 
+        # === WISDOM-BASED REWARDS ===
+        # Track ecosystem health over time for delta-based reward signal
+        # Wisdom = f(hydrological_stability, habitat_quality, structure_integrity)
+        self.wisdom_history: List[float] = []
+
         # === PHASE 3: Time-scale separation counters ===
         # These track when each subsystem was last updated
         self._last_physarum_update = 0
@@ -995,6 +1000,9 @@ class MycoBeaverEnv(gym.Env):
         # Reset counters
         self.current_step = 0
         self.episode_reward = 0.0
+
+        # Reset wisdom history for new episode
+        self.wisdom_history = []
 
         # === PHASE 3: Reset time-scale separation counters ===
         self._last_physarum_update = 0
@@ -1332,9 +1340,33 @@ class MycoBeaverEnv(gym.Env):
         # 5. Subsystem updates
         self._update_subsystems(dt)
 
-        # 6. Compute rewards
+        # 6. Compute rewards using WISDOM-BASED approach
+        # Wisdom = holistic ecosystem health metric
+        # Reward = Δwisdom + survival_bonus (encourages improvement, not existence)
+        wisdom_current = self.compute_wisdom()
+
+        # Compute wisdom delta (improvement since last step)
+        if self.wisdom_history:
+            wisdom_delta = wisdom_current - self.wisdom_history[-1]
+        else:
+            wisdom_delta = 0.0  # First step has no delta
+
+        # Track wisdom history for next step
+        self.wisdom_history.append(wisdom_current)
+
+        # Wisdom-based global reward: delta + small survival bonus
+        # The survival bonus (0.01) prevents zero-reward stagnation
+        # while keeping focus on improvement (delta dominates)
+        wisdom_reward = wisdom_delta + 0.01
+
+        # Also compute traditional global reward for backward compatibility
         global_reward = self._compute_global_reward()
-        rewards = self._combine_rewards(agent_rewards, global_reward)
+
+        # Blend wisdom reward with global reward
+        # wisdom_reward captures improvement, global_reward captures absolute state
+        combined_global_reward = 0.5 * wisdom_reward + 0.5 * global_reward
+
+        rewards = self._combine_rewards(agent_rewards, combined_global_reward)
         self.episode_reward += sum(rewards.values())
 
         # 7. Check termination
@@ -1904,6 +1936,77 @@ class MycoBeaverEnv(gym.Env):
 
         return sinks
 
+    def compute_wisdom(self) -> float:
+        """
+        Compute ecosystem "wisdom" - a holistic measure of ecosystem health.
+
+        Wisdom components:
+        1. Hydrological stability: Low variance in water distribution (σ_h)
+        2. Flood/drought counts: Fewer extreme events is better
+        3. Habitat quality: Combination of vegetation and soil moisture
+
+        Returns:
+            float: Wisdom score (higher = healthier ecosystem)
+
+        Reference: Pattern from blackhole_archive_production.py for history-based metrics
+        """
+        if self.grid_state is None:
+            return 0.0
+
+        # === 1. HYDROLOGICAL STABILITY ===
+        # Lower variance = more stable water distribution = higher wisdom
+        water_variance = np.var(self.grid_state.water_depth)
+        water_variance = np.clip(water_variance, 0.0, 100.0)  # Prevent overflow
+        # Convert to positive contribution: stability = 1 / (1 + σ_h)
+        hydrological_stability = 1.0 / (1.0 + water_variance)
+
+        # === 2. FLOOD/DROUGHT PENALTY ===
+        # Count extreme water conditions
+        flood_threshold = 1.0  # Water depth considered flooding
+        drought_threshold = 0.01  # Water depth considered drought
+
+        flood_count = np.sum(self.grid_state.water_depth > flood_threshold)
+        drought_count = np.sum(self.grid_state.water_depth < drought_threshold)
+        total_cells = self.config.grid.grid_size ** 2
+
+        # Fraction of cells NOT in extreme conditions
+        extreme_fraction = (flood_count + drought_count) / total_cells
+        stability_fraction = 1.0 - np.clip(extreme_fraction, 0.0, 1.0)
+
+        # === 3. HABITAT QUALITY ===
+        # Healthy habitat has both vegetation and appropriate soil moisture
+        vegetation_mean = np.mean(self.grid_state.vegetation)
+        soil_moisture_mean = np.mean(self.grid_state.soil_moisture)
+
+        # Wetland cells (good habitat): water present + vegetation
+        wetland_cells = np.sum(
+            (self.grid_state.water_depth > 0.1) &
+            (self.grid_state.vegetation > 0.3)
+        )
+        wetland_fraction = wetland_cells / total_cells
+
+        # Combine habitat metrics
+        habitat_quality = 0.4 * vegetation_mean + 0.3 * soil_moisture_mean + 0.3 * wetland_fraction
+
+        # === 4. STRUCTURE INTEGRITY ===
+        # Well-maintained dams contribute to ecosystem health
+        dam_cells = self.grid_state.dam_permeability < 0.9
+        if np.any(dam_cells):
+            avg_integrity = np.mean(self.grid_state.dam_integrity[dam_cells])
+        else:
+            avg_integrity = 0.0  # No dams yet
+
+        # === COMBINE INTO WISDOM SCORE ===
+        # Weighted combination of all factors
+        wisdom = (
+            0.30 * hydrological_stability +  # Water stability most important
+            0.25 * stability_fraction +       # Avoid extremes
+            0.25 * habitat_quality +          # Healthy vegetation/soil
+            0.20 * avg_integrity              # Maintained structures
+        )
+
+        return float(wisdom)
+
     def _compute_global_reward(self) -> float:
         """Compute global reward (wisdom signal components)
 
@@ -2334,6 +2437,12 @@ class MycoBeaverEnv(gym.Env):
             avg_dam_integrity = float(np.mean(dam_integrities))
             low_integrity_count = int(np.sum(dam_integrities < self.config.grid.dam_failure_threshold * 2))
 
+        # === WISDOM METRICS ===
+        current_wisdom = self.compute_wisdom()
+        wisdom_delta = 0.0
+        if len(self.wisdom_history) >= 2:
+            wisdom_delta = self.wisdom_history[-1] - self.wisdom_history[-2]
+
         info = {
             "step": self.current_step,
             "n_alive_agents": n_alive,
@@ -2341,6 +2450,10 @@ class MycoBeaverEnv(gym.Env):
             "total_vegetation": np.sum(self.grid_state.vegetation),
             "avg_water_level": np.mean(self.grid_state.water_depth),
             "episode_reward": self.episode_reward,
+            # Wisdom-based metrics
+            "wisdom": current_wisdom,
+            "wisdom_delta": wisdom_delta,
+            "wisdom_history_len": len(self.wisdom_history),
             # Hydrology metrics
             "water_spatial_autocorr": water_autocorr,
             "n_water_pools": n_pools,
