@@ -773,13 +773,20 @@ class EpistemicAntAgent:
                free_energy_computer: FreeEnergyComputer,
                overmind: Overmind):
         """Update with epistemic inference"""
-        
+
         # Sample local field (observation)
+        # Information density correlates with spacetime curvature (more structure = more info)
         if hasattr(spacetime, 'get_information_density'):
             info_density = spacetime.get_information_density(self.position)
+        elif hasattr(spacetime, 'get_curvature'):
+            # Use Kretschmann-based curvature (non-zero in vacuum)
+            # K = 48M²/r⁶ → sqrt(K) ~ 1/r³, normalize to [0,1] range
+            raw_curvature = spacetime.get_curvature(self.position)
+            info_density = np.tanh(raw_curvature)  # Bounded [0,1]
         else:
-            # Fallback: use curvature as proxy
-            info_density = spacetime.get_ricci_scalar(self.position) / 10.0
+            # Final fallback: use radial position as proxy (closer to center = more info)
+            r = max(self.position[1], 3.0) if len(self.position) > 1 else 10.0
+            info_density = 1.0 / (1.0 + r / 10.0)  # Decays with distance
         
         # Create observation in embedding space
         # Pad position to match embedding dimension
