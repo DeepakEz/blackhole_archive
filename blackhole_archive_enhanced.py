@@ -1249,7 +1249,8 @@ class EnhancedAntAgent(Agent):
 
         # If sufficient information density, create vertex or attach to nearby existing one
         # LOWERED THRESHOLD: 0.5 → 0.25 to allow more vertex creation in moderate-info regions
-        if info_density > 0.25 and self.current_vertex is None:
+        # LOWERED THRESHOLD: 0.25 → 0.15 to allow more vertex creation
+        if info_density > 0.15 and self.current_vertex is None:
             # Check for nearby existing vertices first (spatial co-occurrence)
             nearby_vertex = self._find_nearby_vertex(semantic_graph, distance_threshold=2.0)
 
@@ -1376,29 +1377,46 @@ class EnhancedAntAgent(Agent):
                 neighbors = list(successors | predecessors)
 
                 if neighbors:
-                    # Follow pheromones probabilistically
-                    pheromones = []
-                    for n in neighbors:
-                        # Check both edge directions for pheromone
-                        p1 = semantic_graph.get_pheromone((self.current_vertex, n))
-                        p2 = semantic_graph.get_pheromone((n, self.current_vertex))
-                        pheromones.append(max(p1, p2))
-                    probs = np.array(pheromones) + 0.1  # Add baseline
-                    probs /= probs.sum()
+                    # CRITICAL FIX: Force exploration with probability based on stagnation
+                    # If ant has visited same vertices repeatedly, force exploration
+                    recent_unique = len(set(self.path_history[-10:])) if len(self.path_history) >= 10 else 10
+                    stagnation_factor = 1.0 - (recent_unique / 10.0)  # 0 = diverse, 1 = stuck
 
-                    next_vertex = np.random.choice(neighbors, p=probs)
-                    self.current_vertex = next_vertex
-                    self.path_history.append(next_vertex)
+                    # Exploration probability increases with stagnation and low vertex creation
+                    base_explore_prob = 0.15  # 15% base chance to explore instead of follow
+                    explore_prob = base_explore_prob + 0.5 * stagnation_factor
 
-                    # Update position (with safety check)
-                    node_data = semantic_graph.graph.nodes.get(next_vertex, {})
-                    if 'position' in node_data:
-                        self.position = node_data['position']
-                        # Use mark_vertex_accessed for stability tracking when moving to vertex
-                        semantic_graph.mark_vertex_accessed(next_vertex, current_time)
-                    else:
-                        # Vertex missing position data, reset to exploration mode
+                    # Also boost exploration if ant hasn't created vertices recently
+                    if self.vertices_created == 0:
+                        explore_prob += 0.3  # Strong boost for unproductive ants
+
+                    if np.random.random() < explore_prob:
+                        # FORCE EXPLORATION: Detach from graph to seek new regions
                         self.current_vertex = None
+                    else:
+                        # Follow pheromones probabilistically
+                        pheromones = []
+                        for n in neighbors:
+                            # Check both edge directions for pheromone
+                            p1 = semantic_graph.get_pheromone((self.current_vertex, n))
+                            p2 = semantic_graph.get_pheromone((n, self.current_vertex))
+                            pheromones.append(max(p1, p2))
+                        probs = np.array(pheromones) + 0.1  # Add baseline
+                        probs /= probs.sum()
+
+                        next_vertex = np.random.choice(neighbors, p=probs)
+                        self.current_vertex = next_vertex
+                        self.path_history.append(next_vertex)
+
+                        # Update position (with safety check)
+                        node_data = semantic_graph.graph.nodes.get(next_vertex, {})
+                        if 'position' in node_data:
+                            self.position = node_data['position']
+                            # Use mark_vertex_accessed for stability tracking when moving to vertex
+                            semantic_graph.mark_vertex_accessed(next_vertex, current_time)
+                        else:
+                            # Vertex missing position data, reset to exploration mode
+                            self.current_vertex = None
                 else:
                     # No neighbors, explore
                     self.current_vertex = None
