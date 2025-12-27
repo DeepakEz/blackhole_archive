@@ -2266,6 +2266,26 @@ class MycoBeaverEnv(gym.Env):
                 gated_survival = self.config.reward.alive_reward_per_step * survival_multiplier
                 agent_rewards[key] += gated_survival
 
+                # === THERMODYNAMIC SURVIVAL PRESSURE (Framework §11) ===
+                # Survival is a thermodynamic necessity - low energy creates urgency
+                # This creates proactive survival behavior before death occurs
+                energy_ratio = agent.energy / self.config.agent.initial_energy
+                critical_threshold = getattr(
+                    self.config.reward, 'critical_energy_threshold', 0.3
+                )
+                penalty_scale = getattr(
+                    self.config.reward, 'low_energy_penalty_scale', 0.1
+                )
+
+                if energy_ratio < critical_threshold:
+                    # Quadratic penalty: gets worse as energy drops
+                    # At 30% energy: small penalty
+                    # At 10% energy: larger penalty
+                    # At 0% energy: maximum penalty
+                    energy_deficit = critical_threshold - energy_ratio
+                    energy_penalty = -penalty_scale * (energy_deficit / critical_threshold) ** 2
+                    agent_rewards[key] += energy_penalty
+
                 # Add milestone bonus (distributed among alive agents)
                 if milestone_bonus > 0:
                     agent_rewards[key] += milestone_bonus / max(1, sum(1 for a in self.agents if a.alive))
@@ -2395,13 +2415,32 @@ class MycoBeaverEnv(gym.Env):
                     local_grid[4, oy, ox] = 1.0 - self.grid_state.dam_permeability[ny, nx]
                     local_grid[5, oy, ox] = float(self.grid_state.lodge_map[ny, nx])
 
-                    # Pheromone (average of edges from this cell)
-                    if self.pheromone_field is not None:
-                        local_grid[6, oy, ox] = self.pheromone_field.get_average_level(ny, nx)
+                    # === UNIFIED COORDINATION FIELD Ψ (Framework §2.1) ===
+                    # Ψ = α_τ·τ + α_D·(D/L) + α_R·R
+                    # Combines pheromone, physarum, and recruitment into single guidance signal
+                    alpha_tau = 0.4   # Pheromone weight (tactical/recent)
+                    alpha_D = 0.4     # Physarum weight (strategic/global)
+                    alpha_R = 0.2     # Recruitment weight (task-specific)
 
-                    # Physarum conductivity
+                    # Get individual components
+                    pheromone = 0.0
+                    if self.pheromone_field is not None:
+                        pheromone = self.pheromone_field.get_average_level(ny, nx)
+
+                    physarum = 0.0
                     if self.physarum_network is not None:
-                        local_grid[7, oy, ox] = self.physarum_network.get_average_conductivity(ny, nx)
+                        physarum = self.physarum_network.get_average_conductivity(ny, nx)
+
+                    recruitment = 0.0
+                    if self.project_manager is not None:
+                        recruitment = self.project_manager.get_recruitment_at_position(ny, nx)
+
+                    # Unified coordination field
+                    psi = alpha_tau * pheromone + alpha_D * physarum + alpha_R * recruitment
+                    local_grid[6, oy, ox] = psi
+
+                    # Keep individual physarum for backward compatibility / ablation
+                    local_grid[7, oy, ox] = physarum
 
                     # Communication channels
                     if self.grid_state.message_resource is not None:

@@ -348,9 +348,11 @@ class RewardConfig:
     """Reward structure configuration"""
     # === REBALANCED REWARDS (Fix survival >> building imbalance) ===
 
-    # Survival rewards (REDUCED to not dominate)
-    alive_reward_per_step: float = 0.01  # Was 0.1 - reduced 10x
-    death_penalty: float = -50.0  # Was -100.0 - reduced to not discourage risk
+    # Survival rewards - thermodynamic necessity (Framework §11)
+    alive_reward_per_step: float = 0.05  # Per-step survival bonus
+    death_penalty: float = -500.0  # Severe penalty - survival is thermodynamic necessity
+    low_energy_penalty_scale: float = 0.1  # Penalty scaling when energy < 30%
+    critical_energy_threshold: float = 0.3  # Energy ratio triggering survival pressure
 
     # Hydrological stability
     flood_penalty_per_cell: float = -0.1  # Was -0.5 - reduced

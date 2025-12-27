@@ -436,6 +436,149 @@ class ActorCritic(nn.Module):
 
         return action, log_prob, entropy, value.squeeze(-1)
 
+    def compute_expected_free_energy(
+        self,
+        local_grid: torch.Tensor,
+        global_features: torch.Tensor,
+        internal_state: torch.Tensor,
+        efe_weight: float = 0.1
+    ) -> torch.Tensor:
+        """
+        Compute Expected Free Energy (EFE) bias for action selection.
+
+        Framework §10: G(u) = Epistemic + Pragmatic value
+
+        EFE decomposes into:
+        - Epistemic: Actions that reduce uncertainty (explore unknown)
+        - Pragmatic: Actions that satisfy preferences (exploit known good)
+
+        This method computes EFE for each action and returns a bias to
+        add to action logits before softmax.
+
+        Args:
+            local_grid: (batch, channels, height, width)
+            global_features: (batch, n_global_features)
+            internal_state: (batch, n_internal_features)
+            efe_weight: How much to weight EFE vs policy logits
+
+        Returns:
+            (batch, n_actions) EFE bias to subtract from logits
+            (lower EFE = more preferred action)
+        """
+        batch_size = local_grid.shape[0]
+        n_actions = self.config.n_actions
+
+        # Get current value and logits
+        logits, value = self.forward(local_grid, global_features, internal_state)
+
+        # === EPISTEMIC VALUE ===
+        # Approximate with observation entropy: actions that lead to
+        # diverse observations reduce uncertainty
+        # Use coordination field (channel 6) gradient as proxy
+        coord_field = local_grid[:, 6, :, :]  # (batch, h, w)
+        field_var = coord_field.var(dim=(1, 2))  # Variance per sample
+
+        # High variance in coordination field = uncertain about best direction
+        # Actions toward high-Ψ areas have epistemic value
+        epistemic_per_sample = field_var.unsqueeze(1)  # (batch, 1)
+
+        # === PRAGMATIC VALUE ===
+        # Use value function: higher predicted value = lower pragmatic EFE
+        # Normalize value to [0, 1] range for stability
+        value_normalized = torch.sigmoid(value)  # (batch, 1)
+        pragmatic_per_sample = -value_normalized  # Negative: high value = low EFE
+
+        # === ACTION-SPECIFIC EFE ===
+        # Different actions have different expected outcomes
+        # Movement actions (0-4): epistemic (explore)
+        # Build actions (8-11): pragmatic (construct)
+        # Forage actions (5-7): survival
+
+        action_type_bias = torch.zeros(batch_size, n_actions, device=local_grid.device)
+
+        # Energy-based action preferences from internal state
+        # internal_state[0] = energy/initial_energy
+        energy_ratio = internal_state[:, 0:1]  # (batch, 1)
+
+        # Low energy -> prefer foraging (survival)
+        # High energy -> prefer building (pragmatic)
+        # Medium energy -> prefer exploring (epistemic)
+        forage_bias = (1.0 - energy_ratio) * 0.5  # Stronger when low energy
+        build_bias = energy_ratio * 0.3  # Stronger when high energy
+        explore_bias = 0.2 * torch.ones_like(energy_ratio)  # Constant exploration
+
+        # Apply to action categories
+        # Actions: 0=stay, 1-4=move, 5=forage, 6=gather, 7=ping_resource,
+        #          8=build_dam, 9=repair_dam, 10=advertise, 11=recruit, etc.
+        if n_actions > 5:
+            action_type_bias[:, 5:8] = -forage_bias.expand(-1, 3)  # Forage: lower EFE when hungry
+        if n_actions > 8:
+            action_type_bias[:, 8:12] = -build_bias.expand(-1, min(4, n_actions-8))  # Build: lower EFE when energized
+
+        # Movement gets epistemic bonus
+        action_type_bias[:, 1:5] = -explore_bias.expand(-1, 4) * epistemic_per_sample
+
+        # Combine epistemic and pragmatic
+        # EFE = epistemic_term + pragmatic_term + action_bias
+        efe = (
+            epistemic_per_sample.expand(-1, n_actions) * 0.3 +
+            pragmatic_per_sample.expand(-1, n_actions) * 0.7 +
+            action_type_bias
+        )
+
+        return efe * efe_weight
+
+    def get_action_with_efe(
+        self,
+        local_grid: torch.Tensor,
+        global_features: torch.Tensor,
+        internal_state: torch.Tensor,
+        action: Optional[torch.Tensor] = None,
+        deterministic: bool = False,
+        use_efe: bool = True,
+        efe_weight: float = 0.1
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Get action with Expected Free Energy biasing.
+
+        Combines PPO policy with active inference EFE for action selection.
+
+        Args:
+            local_grid: Local grid observations
+            global_features: Global features
+            internal_state: Internal state
+            action: If provided, compute log prob for this action
+            deterministic: Whether to sample or take argmax
+            use_efe: Whether to apply EFE bias
+            efe_weight: Weight for EFE bias
+
+        Returns:
+            (action, log_prob, entropy, value)
+        """
+        logits, value = self.forward(local_grid, global_features, internal_state)
+
+        # Apply EFE bias to logits
+        if use_efe:
+            efe_bias = self.compute_expected_free_energy(
+                local_grid, global_features, internal_state, efe_weight
+            )
+            # Subtract EFE (lower EFE = higher preference)
+            logits = logits - efe_bias
+
+        probs = F.softmax(logits, dim=-1)
+        dist = Categorical(probs)
+
+        if action is None:
+            if deterministic:
+                action = torch.argmax(probs, dim=-1)
+            else:
+                action = dist.sample()
+
+        log_prob = dist.log_prob(action)
+        entropy = dist.entropy()
+
+        return action, log_prob, entropy, value.squeeze(-1)
+
 
 class MultiAgentPolicy:
     """
@@ -460,13 +603,20 @@ class MultiAgentPolicy:
         )
 
     def get_actions(self, observations: Dict[str, Dict[str, np.ndarray]],
-                    deterministic: bool = False) -> Dict[str, int]:
+                    deterministic: bool = False,
+                    use_efe: bool = True,
+                    efe_weight: float = 0.1) -> Dict[str, int]:
         """
-        Get actions for all agents.
+        Get actions for all agents using EFE-biased action selection.
+
+        Framework §10: Combines PPO policy with Expected Free Energy for
+        active inference-style planning.
 
         Args:
             observations: Dict mapping agent_id -> observation dict
             deterministic: Whether to use deterministic actions
+            use_efe: Whether to apply Expected Free Energy bias
+            efe_weight: Weight for EFE bias (0 = pure PPO, higher = more EFE)
 
         Returns:
             Dict mapping agent_id -> action
@@ -490,11 +640,13 @@ class MultiAgentPolicy:
         global_batch = torch.FloatTensor(np.stack(global_feats)).to(self.device)
         internal_batch = torch.FloatTensor(np.stack(internal_states)).to(self.device)
 
-        # Get actions
+        # Get actions with EFE biasing
         with torch.no_grad():
-            actions, _, _, _ = self.network.get_action_and_value(
+            actions, _, _, _ = self.network.get_action_with_efe(
                 local_batch, global_batch, internal_batch,
-                deterministic=deterministic
+                deterministic=deterministic,
+                use_efe=use_efe,
+                efe_weight=efe_weight
             )
 
         # Convert to dict
