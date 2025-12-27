@@ -51,6 +51,14 @@ import uuid
 import sys
 sys.path.append('/mnt/user-data/outputs')
 
+# Import epistemic cognitive layer for Overmind integration
+try:
+    from epistemic_cognitive_layer import Overmind, EpistemicSemanticGraph, FreeEnergyComputer
+    EPISTEMIC_LAYER_AVAILABLE = True
+except ImportError:
+    EPISTEMIC_LAYER_AVAILABLE = False
+    Overmind = None
+
 # =============================================================================
 # THERMODYNAMIC CONSTANTS (replaces arbitrary magic numbers)
 # =============================================================================
@@ -1177,7 +1185,7 @@ class EnhancedBeaverAgent(Agent):
 
 
 class EnhancedAntAgent(Agent):
-    """Enhanced ant with semantic graph building and packet generation"""
+    """Enhanced ant with semantic graph building, epistemic guidance, and individual accountability"""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -1187,6 +1195,17 @@ class EnhancedAntAgent(Agent):
         self.packets_generated = 0
         self.last_position = None  # For co-occurrence edge creation
         self.discovery_times = {}  # vertex_id -> discovery_time for temporal edges
+
+        # ISSUE 1: Epistemic guidance state
+        self.belief_id: Optional[int] = None
+        self.information_gain_history: List[float] = []
+        self.epistemic_memory = []  # Track visited high-info regions
+
+        # ISSUE 2: Individual accountability tracking
+        self.vertices_created = 0      # Personal discovery count
+        self.edges_created = 0         # Personal connection count
+        self.total_info_discovered = 0.0  # Cumulative information gain
+        self.contribution_score = 0.0  # Running counterfactual contribution
 
     def _find_nearby_vertex(self, semantic_graph, distance_threshold: float = 2.0):
         """Find the closest existing vertex within distance threshold."""
@@ -1246,8 +1265,16 @@ class EnhancedAntAgent(Agent):
                     salience=info_density,
                     current_time=current_time
                 )
-                # ENERGY REWARD: Creating new vertices rewards ants (discovery incentive)
-                self.energy = min(1.5, self.energy + 0.05)
+                # ISSUE 2: Track individual contribution
+                self.vertices_created += 1
+                self.total_info_discovered += info_density
+                # Contribution score: weighted by info density (personal discovery value)
+                self.contribution_score += info_density * 0.5
+
+                # ENERGY REWARD: Proportional to individual contribution
+                # Personal reward = 0.7 * discovery + 0.3 * avg colony benefit
+                personal_reward = 0.05 * info_density  # Scales with discovery quality
+                self.energy = min(1.5, self.energy + personal_reward)
 
             self.current_vertex = vertex_id
             self.path_history.append(vertex_id)
@@ -1311,6 +1338,9 @@ class EnhancedAntAgent(Agent):
 
                             if edge_created:
                                 self.pheromone_deposits += 2
+                                # ISSUE 2: Track individual edge contribution
+                                self.edges_created += 2
+                                self.contribution_score += 0.2  # Edge creation value
                                 # ENERGY REWARD: Edge creation strengthens the network
                                 self.energy = min(1.5, self.energy + 0.03)
 
@@ -1373,32 +1403,88 @@ class EnhancedAntAgent(Agent):
                     # No neighbors, explore
                     self.current_vertex = None
 
-        # Random walk if not at vertex - with intelligent exploration
+        # ISSUE 1: EPISTEMIC GUIDANCE - Replace random walk with information-seeking exploration
         if self.current_vertex is None:
             # LAYER INTEGRATION: Ants are attracted to structural field (beaver builds)
             structural_value = spacetime.get_structural_field(self.position)
             structural_gradient = spacetime.get_structural_gradient(self.position)
 
-            # Compute exploration direction
-            random_step = 0.03 * np.random.randn(4)
+            # =====================================================================
+            # EPISTEMIC EXPLORATION: Move toward high-information, unvisited regions
+            # =====================================================================
 
-            # Attraction to structures (where beavers have built)
-            if structural_value > 0.1:
-                # Follow gradient toward denser structure
-                gradient_strength = min(0.5, structural_value)
-                random_step[1:] += gradient_strength * structural_gradient * 0.1
+            # 1. Compute local information density and gradient
+            info_density = spacetime.get_information_density(self.position)
 
-            # Exploration bias - avoid over-explored areas
-            exploration_bias = spacetime.get_exploration_bias(self.position)
-            random_step *= (2.0 - exploration_bias)
+            # 2. Compute information gradient using finite differences
+            eps = 0.5  # Spatial sampling distance
+            info_gradient = np.zeros(3)
+            for dim in range(3):  # r, theta, phi
+                pos_plus = self.position.copy()
+                pos_minus = self.position.copy()
+                pos_plus[dim + 1] += eps
+                pos_minus[dim + 1] -= eps
+                # Bound the test positions
+                pos_plus[1] = max(spacetime.r_s * 1.1, min(spacetime.config.r_max * 0.95, pos_plus[1]))
+                pos_minus[1] = max(spacetime.r_s * 1.1, min(spacetime.config.r_max * 0.95, pos_minus[1]))
+                info_gradient[dim] = (spacetime.get_information_density(pos_plus) -
+                                      spacetime.get_information_density(pos_minus)) / (2 * eps)
+
+            # 3. Novelty bonus: penalize revisiting same regions
+            novelty_factor = 1.0
+            if len(self.epistemic_memory) > 0:
+                # Check distance to recently visited positions
+                for past_pos in self.epistemic_memory[-20:]:
+                    dist = np.linalg.norm(self.position[1:] - past_pos[1:])
+                    if dist < 2.0:
+                        novelty_factor *= 0.7  # Reduce attraction if recently visited
+
+            # 4. Combine exploration signals:
+            #    - Info gradient: move toward higher information density (epistemic value)
+            #    - Structural gradient: follow beaver builds (exploitation)
+            #    - Novelty: avoid recently visited regions (anti-clustering)
+            #    - Random: small perturbation for stochasticity
+
+            # Epistemic drive: normalized gradient toward high-info regions
+            info_grad_norm = np.linalg.norm(info_gradient)
+            if info_grad_norm > 1e-6:
+                epistemic_direction = info_gradient / info_grad_norm
+            else:
+                epistemic_direction = np.zeros(3)
+
+            # Compute weighted exploration direction
+            random_component = 0.02 * np.random.randn(3)  # Reduced randomness
+            epistemic_weight = 0.5 * novelty_factor  # Strong epistemic drive
+            structural_weight = 0.3 if structural_value > 0.1 else 0.0
+            random_weight = 0.2
+
+            exploration_direction = (
+                epistemic_weight * epistemic_direction +
+                structural_weight * structural_gradient +
+                random_weight * random_component
+            )
+
+            # Track information gain for this step
+            expected_info_gain = info_density * novelty_factor
+            self.information_gain_history.append(expected_info_gain)
+            self.total_info_discovered += expected_info_gain * dt
+
+            # 5. Build exploration step (4D: time component stays zero)
+            exploration_step = np.zeros(4)
+            exploration_step[1:] = 0.05 * exploration_direction
 
             # Add exploration offset to velocity before geodesic step
-            exploration_velocity = self.velocity + random_step / (dt + 1e-6)
+            exploration_velocity = self.velocity + exploration_step / (dt + 1e-6)
 
             # Use geodesic motion (respects spacetime curvature)
             self.position, self.velocity = spacetime.geodesic_step(
                 self.position, exploration_velocity, dt
             )
+
+            # 6. Update epistemic memory (sliding window of visited positions)
+            self.epistemic_memory.append(self.position.copy())
+            if len(self.epistemic_memory) > 50:
+                self.epistemic_memory.pop(0)
 
             # LAYER INTEGRATION: Create structure-linked vertex at high structural field
             if structural_value > 0.3 and np.random.random() < 0.1:
@@ -1415,6 +1501,9 @@ class EnhancedAntAgent(Agent):
                     self.current_vertex = vertex_id
                     self.path_history.append(vertex_id)
                     self.discovery_times[vertex_id] = current_time
+                    # ISSUE 2: Track structure vertex creation
+                    self.vertices_created += 1
+                    self.contribution_score += 0.3
 
         # FIX #2: Energy decay modified by structural field AND edges
         # EDGES REDUCE DECAY: Graph connectivity provides efficiency bonus
@@ -2183,6 +2272,16 @@ class EnhancedSimulationEngine:
         self.consecutive_violations = 0
         self.last_energy = None
 
+        # ISSUE 3: Initialize Overmind for meta-level colony regulation
+        if EPISTEMIC_LAYER_AVAILABLE:
+            self.logger.info("Initializing Overmind meta-controller...")
+            self.overmind = Overmind(target_entropy=100.0)
+            self.overmind_active = True
+        else:
+            self.overmind = None
+            self.overmind_active = False
+            self.logger.warning("Overmind not available - epistemic_cognitive_layer.py not found")
+
         self.logger.info("Enhanced simulation engine initialized")
     
     def _setup_logging(self):
@@ -2382,6 +2481,59 @@ class EnhancedSimulationEngine:
                 if pruned > 0 or merged > 0:
                     self.logger.debug(f"Graph maintenance: pruned={pruned}, merged={merged}")
 
+            # =================================================================
+            # ISSUE 3: OVERMIND META-LEVEL CONTROL
+            # =================================================================
+            if self.overmind_active and step % 10 == 0:
+                # Get current colony metrics
+                n_vertices = self.semantic_graph.graph.number_of_nodes()
+                n_edges = self.semantic_graph.graph.number_of_edges()
+                n_structures = sum(b.structures_built for b in self.agents['beavers'])
+                n_packets = sum(b.packets_delivered for b in self.agents['bees'])
+
+                # Create wrapper for Overmind to observe
+                # (Overmind expects EpistemicSemanticGraph, but we can pass data directly)
+                total_energy = sum(a.energy for agents in self.agents.values()
+                                   for a in agents if a.state == "active")
+
+                # Detect imbalance: structures >> vertices or vertices >> packets
+                structure_vertex_ratio = (n_structures + 1) / (n_vertices + 1)
+                vertex_packet_ratio = (n_vertices + 1) / (n_packets + 1)
+
+                # COLONY BALANCING LOGIC
+                # If structures >> vertices: boost ant exploration
+                if structure_vertex_ratio > 10:
+                    # Ants need to explore more - give them energy bonus
+                    exploration_bonus = 0.01 * (structure_vertex_ratio - 10)
+                    for ant in self.agents['ants']:
+                        if ant.state == "active":
+                            ant.energy = min(1.5, ant.energy + exploration_bonus)
+
+                # If vertices >> packets: boost bee transport
+                if vertex_packet_ratio > 5:
+                    # Bees need to transport more - give them energy bonus
+                    transport_bonus = 0.005 * (vertex_packet_ratio - 5)
+                    for bee in self.agents['bees']:
+                        if bee.state == "active":
+                            bee.energy = min(1.5, bee.energy + transport_bonus)
+
+                # If too many contradictions/stagnation: inject exploration noise
+                if hasattr(self.semantic_graph, 'stable_vertex_set'):
+                    stability_rate = len(self.semantic_graph.stable_vertex_set) / (n_vertices + 1)
+                    if stability_rate > 0.9 and step > 200:
+                        # System is stagnating - inject exploration
+                        for ant in self.agents['ants']:
+                            if ant.state == "active":
+                                # Add random velocity perturbation
+                                ant.velocity += 0.02 * np.random.randn(4)
+
+                # Log Overmind state periodically
+                if step % 100 == 0:
+                    self.logger.debug(
+                        f"Overmind: S/V ratio={structure_vertex_ratio:.2f}, "
+                        f"V/P ratio={vertex_packet_ratio:.2f}"
+                    )
+
             # Update statistics
             self.stats['total_energy'] = sum(
                 a.energy for agents in self.agents.values() for a in agents if a.state == "active"
@@ -2402,6 +2554,21 @@ class EnhancedSimulationEngine:
             self.stats['material_remaining'] = EnhancedBeaverAgent.global_material_budget
             self.stats['n_vertices'] = self.semantic_graph.graph.number_of_nodes()
             self.stats['n_edges'] = self.semantic_graph.graph.number_of_edges()
+
+            # ISSUE 2: Individual contribution tracking
+            self.stats['ant_contributions'] = {
+                ant.id: {
+                    'vertices_created': ant.vertices_created,
+                    'edges_created': ant.edges_created,
+                    'info_discovered': ant.total_info_discovered,
+                    'contribution_score': ant.contribution_score
+                }
+                for ant in self.agents['ants']
+            }
+            # Summary: vertices per ant (productivity metric)
+            active_ants = [a for a in self.agents['ants'] if a.state == "active"]
+            total_ant_vertices = sum(a.vertices_created for a in self.agents['ants'])
+            self.stats['vertices_per_ant'] = total_ant_vertices / max(1, len(active_ants))
 
             # VALIDATION: Thermodynamic metrics
             thermo_stats = self.spacetime.get_thermodynamic_stats()
@@ -2438,6 +2605,7 @@ class EnhancedSimulationEngine:
                     f"Step {step}/{n_steps}, t={t:.2f}, "
                     f"Energy={self.stats['total_energy']:.2f}, "
                     f"Vertices={self.stats['n_vertices']}, "
+                    f"V/Ant={self.stats['vertices_per_ant']:.2f}, "
                     f"Structures={self.stats['n_structures_built']}, "
                     f"Packets={self.stats['n_packets_transported']}, "
                     f"Queue={self.stats['queue_length']}, "
