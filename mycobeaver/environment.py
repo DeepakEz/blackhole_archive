@@ -845,6 +845,32 @@ class AgentState:
     structures_built_by_me: int = 0  # Count of structures this agent built
     cells_visited: Optional[set] = None  # Set of (y, x) cells visited for exploration reward
 
+    # === INDIVIDUAL CONTRIBUTION TRACKING ===
+    # Track when structures were built for counterfactual contribution calculation
+    structures_built_timesteps: Optional[List[int]] = None  # Timesteps when agent built structures
+    structures_built_positions: Optional[List[Tuple[int, int]]] = None  # Positions of structures built
+    contribution_window: int = 10  # Window for "recent" contribution calculation
+
+    def record_structure_built(self, timestep: int, position: Tuple[int, int]):
+        """Record that this agent built a structure at given timestep and position"""
+        if self.structures_built_timesteps is None:
+            self.structures_built_timesteps = []
+        if self.structures_built_positions is None:
+            self.structures_built_positions = []
+        self.structures_built_timesteps.append(timestep)
+        self.structures_built_positions.append(position)
+        self.structures_built_by_me += 1
+
+    def get_recent_structures(self, current_timestep: int) -> List[Tuple[int, int]]:
+        """Get positions of structures built within contribution_window"""
+        if self.structures_built_timesteps is None or self.structures_built_positions is None:
+            return []
+        recent = []
+        for ts, pos in zip(self.structures_built_timesteps, self.structures_built_positions):
+            if current_timestep - ts <= self.contribution_window:
+                recent.append(pos)
+        return recent
+
     def get_visit_count(self, position: Tuple[int, int]) -> int:
         """Get how many times this cell was visited (for diminishing exploration reward)"""
         if self.cells_visited is None:
@@ -1340,12 +1366,11 @@ class MycoBeaverEnv(gym.Env):
         # 5. Subsystem updates
         self._update_subsystems(dt)
 
-        # 6. Compute rewards using WISDOM-BASED approach
-        # Wisdom = holistic ecosystem health metric
-        # Reward = Δwisdom + survival_bonus (encourages improvement, not existence)
+        # 6. Compute rewards using WISDOM-BASED + INDIVIDUAL CONTRIBUTION approach
+        # Step A: Compute wisdom and global delta
         wisdom_current = self.compute_wisdom()
 
-        # Compute wisdom delta (improvement since last step)
+        # Compute wisdom delta (global improvement since last step)
         if self.wisdom_history:
             wisdom_delta = wisdom_current - self.wisdom_history[-1]
         else:
@@ -1354,19 +1379,39 @@ class MycoBeaverEnv(gym.Env):
         # Track wisdom history for next step
         self.wisdom_history.append(wisdom_current)
 
-        # Wisdom-based global reward: delta + small survival bonus
-        # The survival bonus (0.01) prevents zero-reward stagnation
-        # while keeping focus on improvement (delta dominates)
-        wisdom_reward = wisdom_delta + 0.01
+        # Step B: Compute individual agent contributions (counterfactual)
+        # Pattern from epistemic_cognitive_layer.py: salience * novelty * persistence
+        agent_contributions = self.compute_agent_contributions()
 
-        # Also compute traditional global reward for backward compatibility
-        global_reward = self._compute_global_reward()
+        # Step C: Compute per-agent rewards combining individual + global
+        # Formula: reward[agent] = 0.7 * individual_contribution + 0.3 * global_delta + 0.01
+        #
+        # Weights rationale:
+        # - 0.7 individual: Most of reward from personal contribution (fixes free-rider)
+        # - 0.3 global: Team benefit when ecosystem improves (encourages cooperation)
+        # - 0.01 survival bonus: Prevents zero-reward stagnation
+        rewards = {}
+        for agent in self.agents:
+            agent_key = f"agent_{agent.id}"
 
-        # Blend wisdom reward with global reward
-        # wisdom_reward captures improvement, global_reward captures absolute state
-        combined_global_reward = 0.5 * wisdom_reward + 0.5 * global_reward
+            # Get action reward from _apply_actions (already computed)
+            action_reward = agent_rewards.get(agent_key, 0.0)
 
-        rewards = self._combine_rewards(agent_rewards, combined_global_reward)
+            # Get individual contribution
+            individual_contribution = agent_contributions.get(agent.id, 0.0)
+
+            # Combine: individual (70%) + global delta (30%) + survival bonus
+            contribution_reward = (
+                0.7 * individual_contribution +
+                0.3 * wisdom_delta +
+                0.01  # Survival bonus
+            )
+
+            # Blend action reward with contribution reward
+            # Action rewards are immediate (build, forage), contribution is ecosystem-level
+            alpha = self.config.reward.individual_weight if hasattr(self.config.reward, 'individual_weight') else 0.6
+            rewards[agent_key] = alpha * action_reward + (1 - alpha) * contribution_reward
+
         self.episode_reward += sum(rewards.values())
 
         # 7. Check termination
@@ -1565,7 +1610,8 @@ class MycoBeaverEnv(gym.Env):
                     self.grid_state.dam_integrity[y, x] = self.config.grid.dam_initial_integrity
 
                 # REWARD FIX: Track personal contribution (fixes free-rider)
-                agent.structures_built_by_me += 1
+                # Use new method that tracks timesteps and positions for counterfactual
+                agent.record_structure_built(self.current_step, (y, x))
 
                 # Update project progress if project system enabled
                 if self.config.training.use_projects and agent.current_project is not None:
@@ -1686,8 +1732,8 @@ class MycoBeaverEnv(gym.Env):
                             if agent.role == AgentRole.MAINTAINER:
                                 reward += self.config.reward.maintainer_prevention_bonus
 
-                        # Track repair for agent
-                        agent.structures_built_by_me += 1  # Repairs count as contribution
+                        # Track repair for agent (repairs count as contribution)
+                        agent.record_structure_built(self.current_step, (y, x))
             agent.energy -= config.build_energy_cost  # Same energy cost as building
 
         elif action == ActionType.PING_RESOURCE:
@@ -2006,6 +2052,78 @@ class MycoBeaverEnv(gym.Env):
         )
 
         return float(wisdom)
+
+    def compute_agent_contributions(self) -> Dict[int, float]:
+        """
+        Compute individual agent contributions using counterfactual reasoning.
+
+        For each agent, estimates: wisdom_actual - wisdom_without_agent_structures
+
+        The counterfactual removes only the agent's RECENT structures (within
+        contribution_window timesteps) to measure their marginal contribution
+        to ecosystem health.
+
+        Returns:
+            Dict mapping agent_id to contribution score
+
+        Reference: epistemic_cognitive_layer.py pattern for combining salience,
+                   novelty, and persistence into a final score.
+        """
+        contributions = {}
+
+        if self.grid_state is None:
+            return {agent.id: 0.0 for agent in self.agents}
+
+        # Compute actual wisdom with all structures
+        wisdom_actual = self.compute_wisdom()
+
+        for agent in self.agents:
+            if not agent.alive:
+                contributions[agent.id] = 0.0
+                continue
+
+            # Get positions of structures this agent built recently
+            recent_structures = agent.get_recent_structures(self.current_step)
+
+            if not recent_structures:
+                # No recent structures = no counterfactual contribution
+                # Still give small credit for being alive and potentially helping
+                contributions[agent.id] = 0.01
+                continue
+
+            # === COUNTERFACTUAL: Temporarily remove agent's structures ===
+            # Save original dam states
+            original_permeabilities = {}
+            original_integrities = {}
+
+            for (y, x) in recent_structures:
+                original_permeabilities[(y, x)] = self.grid_state.dam_permeability[y, x]
+                original_integrities[(y, x)] = self.grid_state.dam_integrity[y, x]
+                # Simulate removal: set permeability to 1.0 (no dam)
+                self.grid_state.dam_permeability[y, x] = 1.0
+                self.grid_state.dam_integrity[y, x] = 1.0
+
+            # Compute counterfactual wisdom without this agent's structures
+            wisdom_counterfactual = self.compute_wisdom()
+
+            # Restore original dam states
+            for (y, x) in recent_structures:
+                self.grid_state.dam_permeability[y, x] = original_permeabilities[(y, x)]
+                self.grid_state.dam_integrity[y, x] = original_integrities[(y, x)]
+
+            # Contribution = how much worse would things be without this agent
+            contribution = wisdom_actual - wisdom_counterfactual
+
+            # Scale contribution by number of recent structures (diminishing returns)
+            # Pattern from epistemic_cognitive_layer.py: persistence_bonus
+            n_structures = len(recent_structures)
+            persistence_factor = min(1.0, n_structures / 3.0)  # Caps at 3 structures
+
+            # Final contribution: base contribution * persistence factor
+            # Clip to prevent negative contributions from dominating
+            contributions[agent.id] = max(0.0, contribution) * (0.5 + 0.5 * persistence_factor)
+
+        return contributions
 
     def _compute_global_reward(self) -> float:
         """Compute global reward (wisdom signal components)
