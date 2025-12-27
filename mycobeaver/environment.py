@@ -25,6 +25,7 @@ from .semantic_memory import (
     create_flood_event, create_dam_break_event, create_resource_event,
     create_danger_event, create_build_success_event
 )
+from .clustered_resources import ClusteredResourceGenerator
 
 
 @dataclass
@@ -1204,38 +1205,44 @@ class MycoBeaverEnv(gym.Env):
         return water_depth
 
     def _generate_vegetation_clusters(self, size: int, water_depth: np.ndarray) -> np.ndarray:
-        """Generate vegetation in clusters (creates exploration pressure)"""
-        vegetation = np.zeros((size, size))
+        """
+        Generate vegetation in clusters using Gaussian Mixture Model.
 
-        # Create 5-8 vegetation clusters
-        n_clusters = self.np_random.integers(5, 9)
+        Creates exploration pressure - agents must navigate to find resource clusters.
 
-        for _ in range(n_clusters):
-            # Random cluster center
-            cy, cx = self.np_random.integers(5, size - 5, 2)
-            cluster_radius = self.np_random.integers(5, 12)
-            cluster_density = self.np_random.uniform(0.6, 1.0)
+        Uses ClusteredResourceGenerator for formal GMM-based distribution:
+        - 3 major clusters (configurable via n_clusters)
+        - Gaussian falloff from cluster centers
+        - Base sparse vegetation everywhere
+        - Reduced vegetation in deep water
 
-            # Add vegetation in cluster (Gaussian falloff)
-            for dy in range(-cluster_radius, cluster_radius + 1):
-                for dx in range(-cluster_radius, cluster_radius + 1):
-                    ny, nx = cy + dy, cx + dx
-                    if 0 <= ny < size and 0 <= nx < size:
-                        dist = np.sqrt(dy**2 + dx**2)
-                        if dist <= cluster_radius:
-                            # Gaussian falloff
-                            amount = cluster_density * np.exp(-dist**2 / (2 * (cluster_radius/2)**2))
-                            vegetation[ny, nx] = max(vegetation[ny, nx], amount)
+        Args:
+            size: Grid size
+            water_depth: Water depth array to mask vegetation
 
-        # Add base sparse vegetation everywhere
-        base_veg = self.np_random.uniform(0.05, 0.15, (size, size))
-        vegetation = np.maximum(vegetation, base_veg)
+        Returns:
+            Vegetation array [0, 1] with clustered distribution
+        """
+        # Get seed from environment's RNG for reproducibility
+        seed = self.np_random.integers(0, 2**31)
 
-        # Reduce vegetation in water
-        vegetation = np.where(water_depth > 0.5, 0.1 * vegetation, vegetation)
+        # Number of clusters (default 3 for exploration pressure)
+        n_clusters = getattr(self.config.grid, 'vegetation_clusters', 3)
 
-        # Normalize to [0, 1]
-        vegetation = np.clip(vegetation, 0.0, 1.0)
+        # Create water mask
+        water_mask = water_depth > 0.5
+
+        # Use ClusteredResourceGenerator for formal GMM distribution
+        generator = ClusteredResourceGenerator(
+            grid_size=size,
+            n_clusters=n_clusters,
+            seed=seed
+        )
+
+        vegetation = generator.generate_vegetation(
+            base_level=0.1,
+            water_mask=water_mask
+        )
 
         return vegetation
 

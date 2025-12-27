@@ -235,6 +235,12 @@ class PPOTrainer:
                 eta_min=config.policy.learning_rate * 0.1
             )
 
+        # === ADAPTIVE KL PENALTY (Lyapunov-style control) ===
+        # Pattern from formal_lyapunov_stability.py: adaptive control response
+        # KL divergence measures policy change; too much = instability
+        self.target_kl = 0.01  # Target KL divergence (constraint)
+        self.kl_coef = 0.2     # Initial KL penalty coefficient
+
         # === PHASE 6: Config dumping ===
         if config.training.dump_config_on_start:
             self._dump_config()
@@ -692,11 +698,18 @@ class PPOTrainer:
                 # Entropy bonus
                 entropy_loss = -entropy.mean()
 
-                # Total loss (using Overmind-modulated entropy coefficient)
+                # === ADAPTIVE KL PENALTY ===
+                # Add KL penalty to loss to prevent excessive policy updates
+                # Pattern from formal_lyapunov_stability.py: constrained optimization
+                with torch.no_grad():
+                    kl_div = (batch_old_log_probs - new_log_probs).mean().item()
+
+                # Total loss (using Overmind-modulated entropy coefficient + adaptive KL)
                 loss = (
                     policy_loss +
                     self.config.policy.value_coef * value_loss +
-                    entropy_coef * entropy_loss  # Modulated by Overmind signals
+                    entropy_coef * entropy_loss +  # Modulated by Overmind signals
+                    self.kl_coef * abs(kl_div)     # Adaptive KL penalty
                 )
 
                 # Optimize
@@ -724,6 +737,17 @@ class PPOTrainer:
                 with torch.no_grad():
                     approx_kl = (batch_old_log_probs - new_log_probs).mean().item()
                     clip_fraction = (torch.abs(ratio - 1) > clip_eps).float().mean().item()
+
+                # === ADAPTIVE KL COEFFICIENT UPDATE ===
+                # Pattern from formal_lyapunov_stability.py: adaptive control response
+                # If KL too high: increase penalty (more conservative)
+                # If KL too low: decrease penalty (allow more exploration)
+                if approx_kl > 1.5 * self.target_kl:
+                    # KL exceeds target - increase penalty to constrain policy
+                    self.kl_coef = min(2.0, self.kl_coef * 1.5)
+                elif approx_kl < self.target_kl / 1.5:
+                    # KL below target - decrease penalty to allow exploration
+                    self.kl_coef = max(0.05, self.kl_coef / 1.5)
 
                 total_policy_loss += policy_loss.item()
                 total_value_loss += value_loss.item()
@@ -791,6 +815,7 @@ class PPOTrainer:
             "grad_norm": total_grad_norm_after / max(1, n_updates),
             "current_lr": current_lr,
             "current_entropy_coef": entropy_coef,
+            "kl_coef": self.kl_coef,  # Adaptive KL penalty coefficient
         }
 
     def train(self, n_episodes: Optional[int] = None,
