@@ -479,6 +479,40 @@ class ProjectManager:
 
         return signals
 
+    def get_recruitment_at_position(self, y: int, x: int, decay_radius: float = 10.0) -> float:
+        """
+        Get recruitment signal strength at a specific position.
+
+        Combines recruitment signals from all active projects with
+        distance-based falloff (Gaussian decay from project centers).
+
+        This enables the unified coordination field Ψ from the framework:
+        Ψ = α_τ·τ + α_D·(D/L) + α_R·R
+
+        Args:
+            y, x: Grid position
+            decay_radius: Distance at which signal decays to 1/e
+
+        Returns:
+            Combined recruitment signal strength [0, 1]
+        """
+        if not self.active_projects:
+            return 0.0
+
+        total_recruitment = 0.0
+
+        for project in self.active_projects.values():
+            py, px = project.center
+            # Euclidean distance to project center
+            distance = np.sqrt((y - py)**2 + (x - px)**2)
+            # Gaussian falloff
+            falloff = np.exp(-distance**2 / (2 * decay_radius**2))
+            # Weight by recruitment signal strength
+            total_recruitment += project.recruitment_signal * falloff
+
+        # Normalize to [0, 1]
+        return min(1.0, total_recruitment / 5.0)
+
     def get_best_project(self, agent_position: Tuple[int, int],
                          agent_thresholds: np.ndarray,
                          max_distance: float = float('inf')) -> Optional[int]:
