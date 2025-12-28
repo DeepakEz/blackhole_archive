@@ -59,6 +59,14 @@ except ImportError:
     EPISTEMIC_LAYER_AVAILABLE = False
     Overmind = None
 
+# Import Adversarial Pressure Layer for Phase II
+try:
+    from adversarial_pressure_layer import AdversarialPressureLayer, AgentState
+    APL_AVAILABLE = True
+except ImportError:
+    APL_AVAILABLE = False
+    AdversarialPressureLayer = None
+
 # =============================================================================
 # THERMODYNAMIC CONSTANTS (replaces arbitrary magic numbers)
 # =============================================================================
@@ -2315,6 +2323,21 @@ class EnhancedSimulationEngine:
             self.overmind_active = False
             self.logger.warning("Overmind not available - epistemic_cognitive_layer.py not found")
 
+        # PHASE II: Initialize Adversarial Pressure Layer
+        if APL_AVAILABLE:
+            self.logger.info("Initializing Adversarial Pressure Layer (Phase II)...")
+            self.apl = AdversarialPressureLayer(config)
+            self.apl_active = True
+            self.apl_stats = {
+                'pressure_history': [],
+                'threat_history': [],
+                'damage_history': []
+            }
+        else:
+            self.apl = None
+            self.apl_active = False
+            self.logger.warning("APL not available - adversarial_pressure_layer.py not found")
+
         self.logger.info("Enhanced simulation engine initialized")
     
     def _setup_logging(self):
@@ -2565,6 +2588,75 @@ class EnhancedSimulationEngine:
                     self.logger.debug(
                         f"Overmind: S/V ratio={structure_vertex_ratio:.2f}, "
                         f"V/P ratio={vertex_packet_ratio:.2f}"
+                    )
+
+            # =================================================================
+            # PHASE II: ADVERSARIAL PRESSURE LAYER
+            # =================================================================
+            if self.apl_active and step % 5 == 0:
+                # Compute system state for APL
+                n_alive = sum(1 for agents_list in self.agents.values()
+                             for a in agents_list if a.state == "active")
+                n_total = sum(len(agents_list) for agents_list in self.agents.values())
+                survival_rate = n_alive / max(1, n_total)
+
+                total_energy = sum(a.energy for agents_list in self.agents.values()
+                                   for a in agents_list if a.state == "active")
+
+                # Energy trend (positive = gaining energy)
+                if self.last_energy is not None:
+                    energy_trend = (total_energy - self.last_energy) / self.config.dt
+                else:
+                    energy_trend = 0.0
+
+                # Build work efficiency
+                n_structures = sum(b.structures_built for b in self.agents['beavers'])
+                n_packets = sum(b.packets_delivered for b in self.agents['bees'])
+                work_per_agent = (n_structures + n_packets) / max(1, n_alive)
+
+                # Graph health
+                n_vertices = self.semantic_graph.graph.number_of_nodes()
+                n_edges = self.semantic_graph.graph.number_of_edges()
+                graph_health = min(1.0, n_vertices / 100.0)  # Healthy if 100+ vertices
+
+                system_state = {
+                    'survival_rate': survival_rate,
+                    'energy_trend': energy_trend,
+                    'work_efficiency': work_per_agent * 10,
+                    'behavioral_entropy': 0.5,  # TODO: compute from action distribution
+                    'graph_health': graph_health,
+                    'packet_backlog': self.semantic_graph.get_total_queue_length(),
+                    'energy_ratio': total_energy / max(1, n_total),
+                    'build_rate': n_structures / max(1, t),
+                    'total_energy': total_energy,
+                    'n_vertices': n_vertices,
+                    'n_edges': n_edges,
+                    'n_packets': n_packets,
+                    'work_per_agent': work_per_agent
+                }
+
+                # Update APL
+                apl_result = self.apl.update(
+                    current_time=t,
+                    dt=self.config.dt * 5,  # APL runs every 5 steps
+                    spacetime=self.spacetime,
+                    semantic_graph=self.semantic_graph,
+                    agents=self.agents,
+                    system_state=system_state
+                )
+
+                # Record APL stats
+                if step % 50 == 0:
+                    self.apl_stats['pressure_history'].append(apl_result['pressure_budget'])
+                    self.apl_stats['threat_history'].append(len(apl_result['active_effects']))
+                    self.apl_stats['damage_history'].append(apl_result['damage_report'])
+
+                # Log APL events
+                if apl_result['triggered_events']:
+                    self.logger.info(
+                        f"APL triggered: {', '.join(apl_result['triggered_events'])} "
+                        f"(budget={apl_result['pressure_budget']:.1f}, "
+                        f"threat={apl_result['threat_level']:.3f})"
                     )
 
             # Update statistics
