@@ -176,19 +176,20 @@ class EnhancedSpacetime:
         """Initialize information density field for ant exploration"""
         # Create interesting structure with multiple peaks
         info = np.zeros((self.config.n_r, self.config.n_theta, self.config.n_phi))
-        
+
         # Add Gaussian blobs at random locations
+        # FIXED: 20 blobs was too sparse - increased to 100 for better coverage
         np.random.seed(42)
-        n_blobs = 20
-        
+        n_blobs = 100  # Was 20 - way too sparse
+
         for _ in range(n_blobs):
             i = np.random.randint(0, self.config.n_r)
             j = np.random.randint(0, self.config.n_theta)
             k = np.random.randint(0, self.config.n_phi)
-            
+
             strength = np.random.uniform(0.3, 1.0)
-            width = np.random.uniform(2.0, 5.0)
-            
+            width = np.random.uniform(3.0, 8.0)  # Wider blobs for more coverage
+
             # Add Gaussian centered at (i,j,k)
             for di in range(-10, 11):
                 for dj in range(-5, 6):
@@ -196,13 +197,16 @@ class EnhancedSpacetime:
                         ii = (i + di) % self.config.n_r
                         jj = max(0, min(self.config.n_theta-1, j + dj))
                         kk = (k + dk) % self.config.n_phi
-                        
+
                         distance = np.sqrt(di**2 + dj**2 + dk**2)
                         info[ii, jj, kk] += strength * np.exp(-distance**2 / (2*width**2))
-        
-        # Normalize
+
+        # Add baseline noise so no region is completely empty
+        info += 0.02 * np.random.random(info.shape)
+
+        # Normalize to [0, 1] but preserve relative structure
         info = info / (np.max(info) + 1e-10)
-        
+
         return info
     
     def get_ricci_scalar(self, position: np.ndarray) -> float:
@@ -1258,19 +1262,32 @@ class EnhancedAntAgent(Agent):
         # Sample local information
         info_density = spacetime.get_information_density(self.position)
 
+        # DIAGNOSTIC: Track info density distribution (first ant only, periodically)
+        if self.id == "ant_0" and int(current_time * 100) % 1000 == 0:
+            import logging
+            logging.getLogger("EnhancedBlackholeArchive").debug(
+                f"ANT DIAGNOSTIC: info_density={info_density:.4f}, "
+                f"current_vertex={self.current_vertex}, "
+                f"vertices_created={self.vertices_created}"
+            )
+
         # ENERGY REGENERATION: Foraging reward for exploring high-info regions
         # Ants gain energy proportional to information density (biological foraging analog)
         foraging_gain = dt * 0.002 * info_density  # Scales with info richness
         self.energy = min(1.5, self.energy + foraging_gain)  # Cap at 1.5x initial energy
 
         # If sufficient information density, create vertex or attach to nearby existing one
-        # LOWERED THRESHOLD: 0.5 → 0.25 to allow more vertex creation in moderate-info regions
-        # LOWERED THRESHOLD: 0.25 → 0.15 to allow more vertex creation
-        if info_density > 0.15 and self.current_vertex is None:
+        # LOWERED THRESHOLD: 0.15 → 0.05 - original was way too high for sparse info field
+        if info_density > 0.05 and self.current_vertex is None:
             # Check for nearby existing vertices first (spatial co-occurrence)
-            nearby_vertex = self._find_nearby_vertex(semantic_graph, distance_threshold=2.0)
+            # REDUCED from 2.0 to 1.0: Tighter clustering for more vertex diversity
+            nearby_vertex = self._find_nearby_vertex(semantic_graph, distance_threshold=1.0)
 
-            if nearby_vertex is not None:
+            # CREATIVITY FACTOR: 30% chance to create new vertex even if nearby exists
+            # This encourages exploration and diverse graph structure for emergent intelligence
+            force_create = np.random.random() < 0.30
+
+            if nearby_vertex is not None and not force_create:
                 # Attach to existing vertex instead of creating new one
                 vertex_id = nearby_vertex
                 # Use mark_vertex_accessed for proper stability tracking
@@ -2959,8 +2976,11 @@ class EnhancedSimulationEngine:
 if __name__ == "__main__":
     from blackhole_archive_main import SimulationConfig
     
+    # Shorter run for testing - set SIM_FAST=1 for 1000 steps, otherwise 10000
+    import os
+    t_max = 10.0 if os.environ.get('SIM_FAST') else 100.0
     config = SimulationConfig(
-        t_max=100.0,
+        t_max=t_max,
         dt=0.01,
         output_dir="./enhanced_results"
     )
