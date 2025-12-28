@@ -1116,9 +1116,16 @@ class EnhancedBeaverAgent(Agent):
         if self.construction_cooldown > 0:
             self.construction_cooldown -= dt
 
+        # ENERGY REGENERATION: Beavers gain energy from structural field (territory maintenance)
+        # Biological analog: beavers benefit from infrastructure they've built
+        local_structure = spacetime.get_structural_field_at(self.position)
+        structure_gain = dt * 0.003 * local_structure  # Energy from maintained structures
+        curvature = spacetime.get_curvature(self.position)
+        curvature_gain = dt * 0.002 * min(curvature, 1.0)  # Bonus from high-curvature regions
+        self.energy = min(1.5, self.energy + structure_gain + curvature_gain)
+
         # Check curvature using Kretschmann-based tidal strength (not Ricci which is 0 in vacuum)
         # get_curvature() returns sqrt(K) where K = 48M²/r⁶ for Schwarzschild
-        curvature = spacetime.get_curvature(self.position)
 
         # Threshold based on tidal strength: ~0.01 corresponds to moderate curvature regions
         if curvature > 0.01 and self.energy > 0.05 and self.construction_cooldown <= 0:
@@ -2123,7 +2130,7 @@ class SemanticGraph:
             f"INVARIANT_violations:   {self.ledger['invariant_violations']}",
             "-" * 60,
             f"NET: created({self.ledger['created_total']}) - pruned({self.ledger['pruned_total']}) = {self.ledger['created_total'] - self.ledger['pruned_total']}",
-            f"VALIDATION: {v_alive} should equal {self.ledger['created_total'] - self.ledger['pruned_total'] + 15}",  # +15 for seeded
+            f"VALIDATION: {v_alive} should equal {self.ledger['created_total'] - self.ledger['pruned_total']}",  # seeded vertices ARE counted in created_total
             "=" * 60,
         ]
         return "\n".join(lines)
