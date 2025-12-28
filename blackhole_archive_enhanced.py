@@ -1714,7 +1714,7 @@ class SemanticGraph:
     """Semantic graph maintained by ants with packet economy"""
 
     # Class-level constants for emergence control
-    MAX_VERTICES = 100
+    MAX_VERTICES = 10000  # FIXED: Was 100, way too low for emergence
     PHASE_1_MATURITY_EDGES = 2
     PHASE_2_MATURITY_EDGES = 5
     MIN_ENTROPY_FOR_TRANSPORT = 0.3
@@ -1724,7 +1724,7 @@ class SemanticGraph:
     BOOTSTRAP_DURATION = 40.0  # Time units for bootstrap phase (increased from 30)
     BOOTSTRAP_EDGE_PROB_MULTIPLIER = 5.0  # Higher edge probability during bootstrap
     VERTEX_GRACE_PERIOD = 30.0  # New vertices protected from pruning (increased from 20)
-    MIN_STABLE_VERTICES = 100  # Minimum vertices to maintain (increased from 10 to preserve graph)
+    MIN_STABLE_VERTICES = 100  # Minimum vertices to maintain
 
     def __init__(self):
         self.graph = nx.DiGraph()
@@ -1745,6 +1745,24 @@ class SemanticGraph:
         self.vertex_creation_times = {}  # vertex_id -> creation_time
         self.vertex_access_counts = {}  # vertex_id -> access count for stability scoring
         self.stable_vertex_set = set()  # Vertices that have proven stable
+
+        # =================================================================
+        # GRAPH LEDGER - Comprehensive operation tracking for debugging
+        # =================================================================
+        self.ledger = {
+            'created_total': 0,
+            'created_rejected_cap': 0,       # Rejected due to MAX_VERTICES
+            'created_replaced': 0,           # Created by replacing low-salience
+            'pruned_total': 0,
+            'pruned_age': 0,                 # Pruned due to age
+            'pruned_replaced': 0,            # Removed to make room
+            'merged_total': 0,
+            'noise_injected': 0,
+            'removed_by_apl': 0,             # Removed by APL effects
+            'min_stable_blocks': 0,          # Times MIN_STABLE prevented removal
+            'invariant_violations': 0,       # Times graph dropped below minimum
+        }
+        self.ledger_history = []  # Snapshots for analysis
 
     def set_creation_time(self, time: float):
         """Set the graph creation time for bootstrap phase tracking"""
@@ -1781,13 +1799,16 @@ class SemanticGraph:
                 candidates.append(v)
 
             if not candidates:
+                self.ledger['created_rejected_cap'] += 1
                 return -1  # No replaceable vertices
 
             min_sal_vertex = min(candidates,
                                   key=lambda v: self.graph.nodes[v].get('salience', 0))
             if self.graph.nodes[min_sal_vertex].get('salience', 0) < salience:
-                self._remove_vertex(min_sal_vertex)
+                self._remove_vertex(min_sal_vertex, reason='replaced')
+                self.ledger['created_replaced'] += 1
             else:
+                self.ledger['created_rejected_cap'] += 1
                 return -1  # Reject new vertex
 
         vertex_id = self.next_vertex_id
@@ -1800,12 +1821,25 @@ class SemanticGraph:
         self.vertex_creation_times[vertex_id] = current_time
         self.vertex_access_counts[vertex_id] = 0
 
+        self.ledger['created_total'] += 1
         return vertex_id
 
-    def _remove_vertex(self, vertex_id: int):
-        """Internal method to cleanly remove a vertex"""
+    def _remove_vertex(self, vertex_id: int, reason: str = 'unknown'):
+        """Internal method to cleanly remove a vertex with ledger tracking"""
         if vertex_id in self.graph:
             self.graph.remove_node(vertex_id)
+
+            # Track reason in ledger
+            if reason == 'replaced':
+                self.ledger['pruned_replaced'] += 1
+            elif reason == 'age':
+                self.ledger['pruned_age'] += 1
+            elif reason == 'apl':
+                self.ledger['removed_by_apl'] += 1
+            elif reason == 'merged':
+                self.ledger['merged_total'] += 1
+            self.ledger['pruned_total'] += 1
+
         if vertex_id in self.packet_queues:
             del self.packet_queues[vertex_id]
         if vertex_id in self.vertex_activations:
@@ -1816,6 +1850,10 @@ class SemanticGraph:
             del self.vertex_access_counts[vertex_id]
         if vertex_id in self.stable_vertex_set:
             self.stable_vertex_set.discard(vertex_id)
+
+        # HARD INVARIANT CHECK
+        if self.graph.number_of_nodes() < self.MIN_STABLE_VERTICES:
+            self.ledger['invariant_violations'] += 1
 
     def mark_vertex_accessed(self, vertex_id: int, current_time: float):
         """Mark vertex as accessed and update stability tracking"""
@@ -1899,6 +1937,7 @@ class SemanticGraph:
             return 0
 
         if self.graph.number_of_nodes() <= min_vertices:
+            self.ledger['min_stable_blocks'] += 1
             return 0  # Don't prune if already at minimum
 
         vertices_to_remove = []
@@ -1938,7 +1977,7 @@ class SemanticGraph:
         vertices_to_remove = vertices_to_remove[:max_to_remove]
 
         for v in vertices_to_remove:
-            self._remove_vertex(v)
+            self._remove_vertex(v, reason='age')
 
         return len(vertices_to_remove)
 
@@ -2011,7 +2050,20 @@ class SemanticGraph:
                         if succ != v1 and succ in self.graph:
                             self.add_edge(v1, succ, 0.5)
 
-                    self.graph.remove_node(v2)
+                    # Use _remove_vertex to track in ledger (note: already deleted packet_queues above)
+                    if v2 in self.graph:
+                        self.graph.remove_node(v2)
+                        self.ledger['merged_total'] += 1
+                        self.ledger['pruned_total'] += 1
+                    # Clean up other tracking structures
+                    if v2 in self.vertex_activations:
+                        del self.vertex_activations[v2]
+                    if v2 in self.vertex_creation_times:
+                        del self.vertex_creation_times[v2]
+                    if v2 in self.vertex_access_counts:
+                        del self.vertex_access_counts[v2]
+                    self.stable_vertex_set.discard(v2)
+
                     merged_count += 1
 
         return merged_count
@@ -2019,6 +2071,45 @@ class SemanticGraph:
     def get_total_queue_length(self) -> int:
         """Get total packets waiting across all vertices"""
         return sum(len(q) for q in self.packet_queues.values())
+
+    def snapshot_ledger(self, step: int):
+        """Take a snapshot of current ledger state for debugging"""
+        snapshot = {
+            'step': step,
+            'v_alive': self.graph.number_of_nodes(),
+            'e_alive': self.graph.number_of_edges(),
+            **self.ledger.copy()
+        }
+        self.ledger_history.append(snapshot)
+
+    def dump_ledger(self) -> str:
+        """Dump ledger for analysis"""
+        v_alive = self.graph.number_of_nodes()
+        e_alive = self.graph.number_of_edges()
+
+        lines = [
+            "=" * 60,
+            "GRAPH LEDGER DUMP",
+            "=" * 60,
+            f"V_alive_current:        {v_alive}",
+            f"E_alive_current:        {e_alive}",
+            f"V_created_total:        {self.ledger['created_total']}",
+            f"V_created_rejected_cap: {self.ledger['created_rejected_cap']}",
+            f"V_created_replaced:     {self.ledger['created_replaced']}",
+            f"V_pruned_total:         {self.ledger['pruned_total']}",
+            f"V_pruned_age:           {self.ledger['pruned_age']}",
+            f"V_pruned_replaced:      {self.ledger['pruned_replaced']}",
+            f"V_merged_total:         {self.ledger['merged_total']}",
+            f"V_noise_injected:       {self.ledger['noise_injected']}",
+            f"V_removed_by_apl:       {self.ledger['removed_by_apl']}",
+            f"MIN_STABLE_blocks:      {self.ledger['min_stable_blocks']}",
+            f"INVARIANT_violations:   {self.ledger['invariant_violations']}",
+            "-" * 60,
+            f"NET: created({self.ledger['created_total']}) - pruned({self.ledger['pruned_total']}) = {self.ledger['created_total'] - self.ledger['pruned_total']}",
+            f"VALIDATION: {v_alive} should equal {self.ledger['created_total'] - self.ledger['pruned_total'] + 15}",  # +15 for seeded
+            "=" * 60,
+        ]
+        return "\n".join(lines)
 
     # =========================================================================
     # CONDITIONAL EDGE FORMATION (Co-activation based)
@@ -2816,6 +2907,9 @@ class EnhancedSimulationEngine:
                 stable_count = sum(1 for s in self.stability_history if s)
                 self.stats['stability_rate'].append(stable_count / max(1, len(self.stability_history)))
 
+                # Snapshot ledger for debugging
+                self.semantic_graph.snapshot_ledger(step)
+
             # Log
             if step % 100 == 0:
                 self.logger.info(
@@ -2830,6 +2924,10 @@ class EnhancedSimulationEngine:
                 )
         
         self.logger.info("Enhanced simulation complete")
+
+        # GRAPH LEDGER DUMP - Critical for debugging vertex collapse
+        self.logger.info("\n" + self.semantic_graph.dump_ledger())
+
         self._save_results()
     
     def _save_results(self):
