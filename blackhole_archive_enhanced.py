@@ -2005,13 +2005,19 @@ class SemanticGraph:
 
         return len(vertices_to_remove)
 
-    def merge_nearby_vertices(self, distance_threshold: float = 1.0):
+    def merge_nearby_vertices(self, distance_threshold: float = 0.05):
         """
         FIX #6: Merge vertices that are spatially close.
         Prevents unbounded growth from redundant beliefs.
 
-        Threshold reduced from 2.0 to 1.0 to preserve more spatial diversity.
-        Now respects MIN_STABLE_VERTICES to prevent over-merging.
+        TUNED: Threshold reduced from 1.0 to 0.05 (essentially duplicate positions only).
+        A/B test showed:
+          - DISABLE_MERGE=1: 721 vertices at step 100
+          - threshold=0.3: only 115 vertices at step 100 (606 merges!)
+        0.3 was still too aggressive. 0.05 should only catch true duplicates.
+
+        ADDITIONAL CRITERIA: Also require salience similarity (within 0.3) to merge.
+        This prevents merging semantically distinct vertices that happen to be near.
 
         Note: Uses SPATIAL distance only (r, theta, phi), not time component.
         """
@@ -2032,6 +2038,7 @@ class SemanticGraph:
             if 'position' not in self.graph.nodes[v1]:
                 continue
             pos1 = self.graph.nodes[v1]['position']
+            sal1 = self.graph.nodes[v1].get('salience', 0.5)
 
             for v2 in vertices[i+1:]:
                 if v2 not in self.graph:
@@ -2039,6 +2046,7 @@ class SemanticGraph:
                 if 'position' not in self.graph.nodes[v2]:
                     continue
                 pos2 = self.graph.nodes[v2]['position']
+                sal2 = self.graph.nodes[v2].get('salience', 0.5)
 
                 # Check SPATIAL distance only (exclude time component at index 0)
                 try:
@@ -2046,16 +2054,14 @@ class SemanticGraph:
                 except (TypeError, ValueError):
                     continue
 
-                if spatial_dist < distance_threshold:
+                # REQUIRE BOTH: close position AND similar salience
+                salience_diff = abs(sal1 - sal2)
+                if spatial_dist < distance_threshold and salience_diff < 0.3:
                     # CRITICAL: Check minimum before each merge
                     if self.graph.number_of_nodes() <= self.MIN_STABLE_VERTICES:
                         return merged_count
 
-                    # Merge v2 into v1 (keep higher salience)
-                    sal1 = self.graph.nodes[v1].get('salience', 0.5)
-                    sal2 = self.graph.nodes[v2].get('salience', 0.5)
-
-                    # Keep the more salient vertex
+                    # Merge v2 into v1 - keep the more salient vertex
                     if sal2 > sal1:
                         self.graph.nodes[v1]['salience'] = sal2
                         self.graph.nodes[v1]['position'] = pos2
@@ -2074,11 +2080,12 @@ class SemanticGraph:
                         if succ != v1 and succ in self.graph:
                             self.add_edge(v1, succ, 0.5)
 
-                    # Use _remove_vertex to track in ledger (note: already deleted packet_queues above)
+                    # Remove merged vertex (NOT a prune - it's a merge!)
+                    # FIX: Merges should NOT increment pruned_total - they're distinct operations
                     if v2 in self.graph:
                         self.graph.remove_node(v2)
                         self.ledger['merged_total'] += 1
-                        self.ledger['pruned_total'] += 1
+                        # DON'T increment pruned_total for merges - that was double-counting!
                     # Clean up other tracking structures
                     if v2 in self.vertex_activations:
                         del self.vertex_activations[v2]
@@ -2129,8 +2136,8 @@ class SemanticGraph:
             f"MIN_STABLE_blocks:      {self.ledger['min_stable_blocks']}",
             f"INVARIANT_violations:   {self.ledger['invariant_violations']}",
             "-" * 60,
-            f"NET: created({self.ledger['created_total']}) - pruned({self.ledger['pruned_total']}) = {self.ledger['created_total'] - self.ledger['pruned_total']}",
-            f"VALIDATION: {v_alive} should equal {self.ledger['created_total'] - self.ledger['pruned_total']}",  # seeded vertices ARE counted in created_total
+            f"NET: created({self.ledger['created_total']}) - pruned({self.ledger['pruned_total']}) - merged({self.ledger['merged_total']}) = {self.ledger['created_total'] - self.ledger['pruned_total'] - self.ledger['merged_total']}",
+            f"VALIDATION: {v_alive} should equal {self.ledger['created_total'] - self.ledger['pruned_total'] - self.ledger['merged_total']}",
             "=" * 60,
         ]
         return "\n".join(lines)
@@ -2672,9 +2679,18 @@ class EnhancedSimulationEngine:
             self.spacetime.decay_entropy(self.config.dt)
 
             # FIX #6: Periodically prune and merge graph
+            # A/B TEST CONTROLS: Set env vars to disable for debugging
+            import os
+            enable_prune = not os.environ.get('DISABLE_PRUNE')
+            enable_merge = not os.environ.get('DISABLE_MERGE')
+
             if step % 50 == 0 and step > 0:
-                pruned = self.semantic_graph.prune_graph(t)
-                merged = self.semantic_graph.merge_nearby_vertices()
+                pruned = 0
+                merged = 0
+                if enable_prune:
+                    pruned = self.semantic_graph.prune_graph(t)
+                if enable_merge:
+                    merged = self.semantic_graph.merge_nearby_vertices()
                 if pruned > 0 or merged > 0:
                     self.logger.debug(f"Graph maintenance: pruned={pruned}, merged={merged}")
 
