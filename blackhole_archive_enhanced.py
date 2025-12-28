@@ -1707,8 +1707,8 @@ class SemanticGraph:
     # Extended bootstrap allows network to stabilize before strict edge policies apply
     BOOTSTRAP_DURATION = 40.0  # Time units for bootstrap phase (increased from 30)
     BOOTSTRAP_EDGE_PROB_MULTIPLIER = 5.0  # Higher edge probability during bootstrap
-    VERTEX_GRACE_PERIOD = 20.0  # New vertices protected from pruning (increased from 15)
-    MIN_STABLE_VERTICES = 10  # Minimum vertices to maintain for stability (increased from 8)
+    VERTEX_GRACE_PERIOD = 30.0  # New vertices protected from pruning (increased from 20)
+    MIN_STABLE_VERTICES = 100  # Minimum vertices to maintain (increased from 10 to preserve graph)
 
     def __init__(self):
         self.graph = nx.DiGraph()
@@ -1858,7 +1858,7 @@ class SemanticGraph:
             if self.pheromones[edge] < 0.01:
                 del self.pheromones[edge]
 
-    def prune_graph(self, current_time: float, max_age: float = 50.0, min_vertices: int = None):
+    def prune_graph(self, current_time: float, max_age: float = 80.0, min_vertices: int = None):
         """
         Prune vertices that haven't been accessed recently.
         Cost of memory - old, unused beliefs are forgotten.
@@ -1926,10 +1926,12 @@ class SemanticGraph:
 
         return len(vertices_to_remove)
 
-    def merge_nearby_vertices(self, distance_threshold: float = 2.0):
+    def merge_nearby_vertices(self, distance_threshold: float = 1.0):
         """
         FIX #6: Merge vertices that are spatially close.
         Prevents unbounded growth from redundant beliefs.
+
+        Threshold reduced from 2.0 to 1.0 to preserve more spatial diversity.
 
         Note: Uses SPATIAL distance only (r, theta, phi), not time component.
         """
