@@ -191,13 +191,17 @@ class AdversarialPressureLayer:
         self.config = config
 
         # Pressure budget system
-        self.pressure_budget = 10.0  # Starting budget
-        self.max_pressure_budget = 100.0
-        self.min_pressure_budget = 1.0
+        self.pressure_budget = 5.0  # Start LOW - ramp up gradually
+        self.max_pressure_budget = 50.0  # Cap lower to prevent wipeout
+        self.min_pressure_budget = 0.5
 
         # Threat level (EMA)
-        self.threat_level = 0.3  # 0-1
+        self.threat_level = 0.1  # Start low
         self.threat_ema_alpha = 0.1
+
+        # Emergency safety
+        self.emergency_mode = False
+        self.emergency_cooldown = 0.0
 
         # History tracking
         self.shock_history: deque = deque(maxlen=50)
@@ -239,8 +243,8 @@ class AdversarialPressureLayer:
             severity=ThreatSeverity.EVENT,
             cost=15.0,
             duration=20.0,
-            cooldown=30.0,
-            effect_strength=0.5,  # 50% reduction in energy inflow
+            cooldown=50.0,  # Longer cooldown
+            effect_strength=0.2,  # Was 50% - reduced to 20%
             cascade_to=[ThreatCategory.STRUCTURAL, ThreatCategory.PREDATOR]
         )
 
@@ -261,7 +265,7 @@ class AdversarialPressureLayer:
             cost=2.0,
             duration=float('inf'),  # Always on
             cooldown=0.0,
-            effect_strength=0.02,  # 2% per time unit
+            effect_strength=0.005,  # 0.5% per time unit (was 2%!)
         )
 
         # =====================================================================
@@ -274,8 +278,8 @@ class AdversarialPressureLayer:
             severity=ThreatSeverity.EVENT,
             cost=20.0,
             duration=5.0,
-            cooldown=50.0,
-            effect_strength=0.3,  # Destroys 30% of vulnerable structures
+            cooldown=80.0,  # Longer cooldown
+            effect_strength=0.1,  # Was 30% - reduced to 10%
             target_selector="low_placement",
             cascade_to=[ThreatCategory.RESOURCE, ThreatCategory.COMMUNICATION]
         )
@@ -287,7 +291,7 @@ class AdversarialPressureLayer:
             cost=1.0,
             duration=float('inf'),
             cooldown=0.0,
-            effect_strength=0.01,
+            effect_strength=0.003,  # Was 0.01 - too aggressive
         )
 
         threats['structural_decay'] = ThreatEvent(
@@ -297,7 +301,7 @@ class AdversarialPressureLayer:
             cost=1.5,
             duration=float('inf'),
             cooldown=0.0,
-            effect_strength=0.015,
+            effect_strength=0.004,  # Was 0.015 - too aggressive
         )
 
         # =====================================================================
@@ -322,7 +326,7 @@ class AdversarialPressureLayer:
             cost=3.0,
             duration=float('inf'),
             cooldown=0.0,
-            effect_strength=0.05,  # 5% noise vertices
+            effect_strength=0.01,  # Was 5% - reduced to 1%
         )
 
         threats['semantic_decay'] = ThreatEvent(
@@ -332,7 +336,7 @@ class AdversarialPressureLayer:
             cost=2.0,
             duration=float('inf'),
             cooldown=0.0,
-            effect_strength=0.02,
+            effect_strength=0.005,  # Was 0.02 - reduced to 0.5%
         )
 
         threats['contradiction_storm'] = ThreatEvent(
@@ -357,7 +361,7 @@ class AdversarialPressureLayer:
             cost=2.0,
             duration=float('inf'),
             cooldown=0.0,
-            effect_strength=0.1,
+            effect_strength=0.02,  # Was 0.1 - reduced to 2%
         )
 
         threats['packet_loss'] = ThreatEvent(
@@ -391,8 +395,8 @@ class AdversarialPressureLayer:
             severity=ThreatSeverity.EVENT,
             cost=15.0,
             duration=20.0,
-            cooldown=40.0,
-            effect_strength=0.1,  # 10% mortality risk in zone
+            cooldown=60.0,  # Longer cooldown
+            effect_strength=0.03,  # Was 0.1 - reduced to 3%
             target_selector="spatial"
         )
 
@@ -402,8 +406,8 @@ class AdversarialPressureLayer:
             severity=ThreatSeverity.EVENT,
             cost=8.0,
             duration=25.0,
-            cooldown=35.0,
-            effect_strength=0.3,
+            cooldown=50.0,  # Longer cooldown
+            effect_strength=0.1,  # Was 0.3 - reduced to 10%
         )
 
         threats['epidemic'] = ThreatEvent(
@@ -412,8 +416,8 @@ class AdversarialPressureLayer:
             severity=ThreatSeverity.BOSS,
             cost=25.0,
             duration=30.0,
-            cooldown=100.0,
-            effect_strength=0.4,
+            cooldown=150.0,  # Much longer cooldown
+            effect_strength=0.15,  # Was 0.4 - reduced to 15%
             target_selector="cluster",
             cascade_to=[ThreatCategory.RESOURCE]
         )
@@ -429,6 +433,7 @@ class AdversarialPressureLayer:
         Update pressure budget based on system state.
 
         Increases when too stable, decreases when near collapse.
+        CRITICAL: Must respond FAST to prevent wipeout.
         """
         # Extract metrics
         survival_rate = system_state.get('survival_rate', 1.0)
@@ -437,6 +442,42 @@ class AdversarialPressureLayer:
         behavioral_entropy = system_state.get('behavioral_entropy', 0.5)
         graph_health = system_state.get('graph_health', 0.5)
         packet_backlog = system_state.get('packet_backlog', 0)
+
+        # =====================================================================
+        # EMERGENCY SHUTOFF - Immediate response to critical survival
+        # =====================================================================
+        if survival_rate < 0.5:
+            # CRITICAL: More than half dead - emergency mode
+            self.emergency_mode = True
+            self.emergency_cooldown = 50.0  # Long cooldown to let system recover
+            self.pressure_budget = self.min_pressure_budget
+            self.threat_level = 0.05
+            self.metrics['near_collapses'] += 1
+            logger.warning(f"APL EMERGENCY MODE: survival={survival_rate:.2f}, shutting down pressure")
+            return self.pressure_budget
+
+        if survival_rate < 0.7:
+            # Severe stress - rapidly reduce pressure
+            budget_delta = -10.0 * (0.7 - survival_rate)
+            self.pressure_budget += budget_delta
+            self.pressure_budget = max(self.min_pressure_budget, self.pressure_budget)
+            self.metrics['near_collapses'] += 1
+            logger.info(f"APL severe stress: survival={survival_rate:.2f}, budget={self.pressure_budget:.1f}")
+            return self.pressure_budget
+
+        # Handle emergency cooldown
+        if self.emergency_mode:
+            self.emergency_cooldown -= 1.0
+            if self.emergency_cooldown <= 0 and survival_rate > 0.8:
+                self.emergency_mode = False
+                logger.info("APL exiting emergency mode")
+            else:
+                # Stay in low-pressure mode
+                return self.pressure_budget
+
+        # =====================================================================
+        # NORMAL OPERATION
+        # =====================================================================
 
         # Calculate stability score
         stability_factors = [
@@ -448,26 +489,26 @@ class AdversarialPressureLayer:
         ]
         self.stability_score = np.mean(stability_factors)
 
-        # Calculate collapse risk
+        # Calculate collapse risk - be more sensitive
         collapse_factors = [
             1.0 - survival_rate,
-            max(0, -energy_trend) / 10.0,  # Energy crash
-            min(1.0, packet_backlog / 100.0),  # Backlog explosion
+            max(0, -energy_trend) / 5.0,  # Energy crash (more sensitive)
+            min(1.0, packet_backlog / 50.0),  # Backlog (lower threshold)
             1.0 - graph_health  # Graph fragmentation
         ]
         collapse_risk = np.mean(collapse_factors)
 
-        # Budget adjustment
-        if self.stability_score > 0.8:
-            # Too stable - increase pressure
-            budget_delta = 2.0 * (self.stability_score - 0.5)
-        elif collapse_risk > 0.5:
-            # Near collapse - reduce pressure
-            budget_delta = -3.0 * collapse_risk
+        # Budget adjustment - slower increases, faster decreases
+        if collapse_risk > 0.3:  # Lower threshold for reducing pressure
+            # Reduce pressure proportionally
+            budget_delta = -5.0 * collapse_risk
             self.metrics['near_collapses'] += 1
+        elif self.stability_score > 0.85:  # Higher threshold for increasing
+            # Very stable - slowly increase pressure
+            budget_delta = 1.0 * (self.stability_score - 0.7)
         else:
-            # Normal - slight increase to maintain pressure
-            budget_delta = 0.5 * (self.stability_score - 0.3)
+            # Normal - maintain or slight decrease for safety
+            budget_delta = 0.2 * (self.stability_score - 0.5)
 
         self.pressure_budget += budget_delta
         self.pressure_budget = np.clip(
@@ -561,22 +602,58 @@ class AdversarialPressureLayer:
         return max(0.1, novelty)
 
     def _calculate_safety(self, threat: ThreatEvent, system_state: Dict) -> float:
-        """Avoid total wipe - keep pressure learnable"""
+        """
+        Avoid total wipe - keep pressure learnable.
+
+        CRITICAL: Must scale ALL threats based on survival, not just BOSS/EVENT.
+        """
         survival_rate = system_state.get('survival_rate', 1.0)
         energy_ratio = system_state.get('energy_ratio', 0.5)
 
-        # Reduce dangerous threats when system is struggling
+        # Emergency mode - almost no threats
+        if self.emergency_mode:
+            return 0.01  # Only 1% chance for any threat
+
+        # CRITICAL survival thresholds - scale ALL threats
+        if survival_rate < 0.6:
+            # Below 60% survival - almost no threats
+            return 0.05
+
         if survival_rate < 0.7:
+            # 60-70% survival - minimal threats
+            if threat.severity == ThreatSeverity.BOSS:
+                return 0.0  # No boss events
+            if threat.severity == ThreatSeverity.EVENT:
+                return 0.1
+            # Background still at 0.2
+            return 0.2
+
+        if survival_rate < 0.8:
+            # 70-80% survival - reduced threats
             if threat.severity == ThreatSeverity.BOSS:
                 return 0.1
             if threat.severity == ThreatSeverity.EVENT:
-                return 0.5
+                return 0.3
+            # Background at 0.5
+            return 0.5
 
+        if survival_rate < 0.9:
+            # 80-90% survival - light reduction
+            if threat.severity == ThreatSeverity.BOSS:
+                return 0.3
+            if threat.severity == ThreatSeverity.EVENT:
+                return 0.6
+            return 0.8
+
+        # Energy-based reduction (on top of survival)
+        safety = 1.0
         if energy_ratio < 0.3:
             if threat.category == ThreatCategory.RESOURCE:
-                return 0.3
+                safety *= 0.3
+            elif threat.category == ThreatCategory.PREDATOR:
+                safety *= 0.5
 
-        return 1.0
+        return safety
 
     def trigger_threat(self, threat_name: str, current_time: float,
                       system_state: Dict) -> Dict:
@@ -625,10 +702,12 @@ class AdversarialPressureLayer:
     # =========================================================================
 
     def apply_effects(self, current_time: float, spacetime, semantic_graph,
-                     agents: Dict, dt: float) -> Dict:
+                     agents: Dict, dt: float, system_state: Optional[Dict] = None) -> Dict:
         """
         Apply all active effects to the system.
         Returns damage report.
+
+        CRITICAL: Effects are scaled by survival rate to prevent wipeout.
         """
         damage_report = {
             'structures_damaged': 0,
@@ -638,6 +717,29 @@ class AdversarialPressureLayer:
             'agents_affected': 0,
             'energy_drained': 0.0
         }
+
+        # Get survival rate for effect scaling
+        survival_rate = 1.0
+        if system_state:
+            survival_rate = system_state.get('survival_rate', 1.0)
+
+        # Emergency mode - suspend ALL effects
+        if self.emergency_mode:
+            logger.info("APL emergency mode - all effects suspended")
+            return damage_report
+
+        # Calculate effect scaling based on survival
+        # This ensures effects weaken as the system struggles
+        if survival_rate < 0.5:
+            effect_scale = 0.0  # No effects below 50%
+        elif survival_rate < 0.7:
+            effect_scale = 0.2  # 20% effect below 70%
+        elif survival_rate < 0.8:
+            effect_scale = 0.5  # 50% effect below 80%
+        elif survival_rate < 0.9:
+            effect_scale = 0.75  # 75% effect below 90%
+        else:
+            effect_scale = 1.0  # Full effect above 90%
 
         # Process each active effect
         expired = []
@@ -649,29 +751,37 @@ class AdversarialPressureLayer:
 
             # Apply based on category
             category = effect['category']
-            strength = effect['strength']
+            scaled_strength = effect['strength'] * effect_scale  # SCALE by survival!
+
+            # Skip if effectively no strength
+            if scaled_strength < 0.001:
+                continue
+
+            # Create a scaled effect copy for the apply functions
+            scaled_effect = effect.copy()
+            scaled_effect['strength'] = scaled_strength
 
             if category == ThreatCategory.RESOURCE:
-                damage = self._apply_resource_effect(effect, spacetime, agents, dt)
+                damage = self._apply_resource_effect(scaled_effect, spacetime, agents, dt)
                 damage_report['energy_drained'] += damage
 
             elif category == ThreatCategory.STRUCTURAL:
-                damage = self._apply_structural_effect(effect, spacetime, dt)
+                damage = self._apply_structural_effect(scaled_effect, spacetime, dt)
                 damage_report['structures_damaged'] += damage
 
             elif category == ThreatCategory.INFORMATION:
                 v_damage, e_damage = self._apply_information_effect(
-                    effect, semantic_graph, dt
+                    scaled_effect, semantic_graph, dt
                 )
                 damage_report['vertices_decayed'] += v_damage
                 damage_report['edges_weakened'] += e_damage
 
             elif category == ThreatCategory.COMMUNICATION:
-                damage = self._apply_communication_effect(effect, semantic_graph, dt)
+                damage = self._apply_communication_effect(scaled_effect, semantic_graph, dt)
                 damage_report['packets_lost'] += damage
 
             elif category == ThreatCategory.PREDATOR:
-                damage = self._apply_predator_effect(effect, agents, dt)
+                damage = self._apply_predator_effect(scaled_effect, agents, dt)
                 damage_report['agents_affected'] += damage
 
         # Remove expired effects
@@ -931,9 +1041,9 @@ class AdversarialPressureLayer:
             if effects:
                 triggered.append(threat_name)
 
-        # Apply all active effects
+        # Apply all active effects (scaled by survival!)
         damage_report = self.apply_effects(
-            current_time, spacetime, semantic_graph, agents, dt
+            current_time, spacetime, semantic_graph, agents, dt, system_state
         )
 
         # Check for recovery state
