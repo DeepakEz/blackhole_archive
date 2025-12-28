@@ -2971,8 +2971,11 @@ class EnhancedSimulationEngine:
 if __name__ == "__main__":
     from blackhole_archive_main import SimulationConfig
     
+    # Shorter run for testing - set SIM_FAST=1 for 1000 steps, otherwise 10000
+    import os
+    t_max = 10.0 if os.environ.get('SIM_FAST') else 100.0
     config = SimulationConfig(
-        t_max=100.0,
+        t_max=t_max,
         dt=0.01,
         output_dir="./enhanced_results"
     )

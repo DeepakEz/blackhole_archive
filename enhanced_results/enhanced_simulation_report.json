@@ -1,0 +1,1646 @@
+{
+  "config": {
+    "black_hole_mass": 1.0,
+    "n_beavers": 50,
+    "n_ants": 200,
+    "n_bees": 100,
+    "t_max": 10.0,
+    "dt": 0.01
+  },
+  "final_statistics": {
+    "n_packets_transported": 4,
+    "total_energy": 365.5831246555068,
+    "n_structures_built": 314,
+    "n_vertices": 48,
+    "n_edges": 1888,
+    "energy_history": [
+      362.2098522456379,
+      371.0114473302258,
+      379.67234395762114,
+      383.5872122743338,
+      387.0978036617012,
+      390.02844098996434,
+      392.66854306685735,
+      395.07864658380885,
+      397.5188027747861,
+      400.17346993628684,
+      401.9827316338724,
+      404.3452939536349,
+      406.6125038233597,
+      407.2380428711998,
+      406.9237448251891,
+      406.70679089048076,
+      406.56457302699806,
+      406.55258657831985,
+      406.34984114700165,
+      406.26452315223395,
+      406.0684741625434,
+      405.9515550662142,
+      405.8044305641535,
+      405.63740580673544,
+      405.50892884280233,
+      405.3969257614332,
+      405.18238566043414,
+      404.8585019777956,
+      404.23713747571287,
+      403.8385362407999,
+      403.5068328906788,
+      403.25250625035585,
+      402.90772033523956,
+      402.6129829039266,
+      402.28823066632174,
+      402.00299712499907,
+      401.69579145369823,
+      401.4257463183201,
+      400.87768912923536,
+      400.2584030642883,
+      399.8117518727544,
+      399.3416545920254,
+      398.93408580793135,
+      398.3077824069122,
+      397.8577819277423,
+      397.3957551405926,
+      396.8883129795954,
+      396.43991348696056,
+      395.9502513245768,
+      395.43489462749056,
+      395.1426092595383,
+      394.66893125959683,
+      394.2358328405869,
+      393.67774073944935,
+      393.1773538226552,
+      392.6769865687997,
+      392.0869887747325,
+      391.4598269780194,
+      390.8823556549286,
+      390.5022265726703,
+      390.018104741575,
+      389.53920312115395,
+      389.18046269766575,
+      388.7676916612021,
+      388.21632314116124,
+      387.6404205615784,
+      387.0285941662413,
+      386.456954186057,
+      385.82503522498666,
+      385.3807008965041,
+      384.88420458899446,
+      384.3033222526164,
+      383.64698601592346,
+      383.0460650499535,
+      382.4838108058554,
+      381.87992261799195,
+      381.3153843403389,
+      380.7464720732036,
+      380.1344679568133,
+      379.4992092535808,
+      378.8609608469349,
+      378.2421981915412,
+      377.55616872651046,
+      376.8638498234104,
+      376.3339161525392,
+      375.73041950463613,
+      375.00500411682174,
+      374.34988939890474,
+      373.63436903046744,
+      372.89272803494515,
+      372.2295407807527,
+      371.5667528303948,
+      370.8640250490174,
+      370.2842167447956,
+      369.61407031999244,
+      368.963259705022,
+      368.2291877194911,
+      367.5952846170311,
+      366.87000397776626,
+      366.1505872344347
+    ],
+    "vertices_history": [
+      29,
+      36,
+      38,
+      38,
+      38,
+      38,
+      38,
+      38,
+      38,
+      38,
+      38,
+      39,
+      39,
+      39,
+      39,
+      39,
+      39,
+      39,
+      39,
+      39,
+      39,
+      39,
+      39,
+      39,
+      40,
+      40,
+      40,
+      40,
+      40,
+      40,
+      40,
+      40,
+      40,
+      40,
+      40,
+      40,
+      40,
+      40,
+      40,
+      40,
+      40,
+      40,
+      40,
+      40,
+      41,
+      41,
+      41,
+      41,
+      41,
+      41,
+      42,
+      42,
+      42,
+      42,
+      42,
+      42,
+      42,
+      42,
+      43,
+      44,
+      44,
+      44,
+      44,
+      44,
+      44,
+      44,
+      44,
+      44,
+      44,
+      44,
+      44,
+      44,
+      44,
+      44,
+      44,
+      45,
+      45,
+      45,
+      45,
+      45,
+      45,
+      45,
+      45,
+      45,
+      45,
+      46,
+      46,
+      47,
+      47,
+      47,
+      48,
+      48,
+      48,
+      48,
+      48,
+      48,
+      48,
+      48,
+      48,
+      48
+    ],
+    "structures_history": [
+      35,
+      36,
+      36,
+      36,
+      38,
+      38,
+      38,
+      38,
+      38,
+      39,
+      74,
+      75,
+      75,
+      75,
+      78,
+      79,
+      80,
+      80,
+      80,
+      81,
+      82,
+      82,
+      82,
+      82,
+      84,
+      85,
+      86,
+      89,
+      109,
+      119,
+      122,
+      123,
+      123,
+      123,
+      123,
+      123,
+      124,
+      126,
+      136,
+      146,
+      148,
+      150,
+      154,
+      164,
+      166,
+      166,
+      169,
+      169,
+      170,
+      172,
+      172,
+      175,
+      176,
+      181,
+      183,
+      187,
+      193,
+      202,
+      209,
+      212,
+      213,
+      215,
+      215,
+      216,
+      217,
+      220,
+      224,
+      230,
+      233,
+      234,
+      236,
+      238,
+      247,
+      249,
+      250,
+      253,
+      255,
+      257,
+      258,
+      260,
+      261,
+      261,
+      267,
+      270,
+      273,
+      275,
+      280,
+      283,
+      286,
+      290,
+      291,
+      292,
+      294,
+      295,
+      298,
+      299,
+      302,
+      303,
+      307,
+      309
+    ],
+    "stability_rate": [
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      0.99644128113879,
+      0.9965635738831615,
+      0.9933554817275747,
+      0.9903536977491961,
+      0.9875389408099688,
+      0.9848942598187311,
+      0.9824046920821115,
+      0.98005698005698,
+      0.9778393351800554,
+      0.9757412398921833,
+      0.973753280839895,
+      0.9718670076726342,
+      0.970074812967581,
+      0.9683698296836983,
+      0.9667458432304038,
+      0.9651972157772621,
+      0.963718820861678,
+      0.9623059866962306,
+      0.9609544468546638,
+      0.9596602972399151,
+      0.9584199584199584,
+      0.9572301425661914,
+      0.9560878243512974,
+      0.9549902152641878,
+      0.9539347408829175,
+      0.9529190207156308,
+      0.9519408502772643,
+      0.9509981851179673,
+      0.9500891265597148,
+      0.9492119089316988,
+      0.9483648881239243,
+      0.9475465313028765,
+      0.9467554076539102,
+      0.9459901800327333,
+      0.9452495974235104,
+      0.9445324881141046,
+      0.9438377535101404,
+      0.9431643625192012,
+      0.9425113464447806,
+      0.9418777943368107,
+      0.9412628487518355,
+      0.9406657018813314,
+      0.9400855920114123,
+      0.939521800281294,
+      0.9389736477115118,
+      0.9384404924760602,
+      0.9379217273954116,
+      0.9374167776298269,
+      0.9369250985545335,
+      0.9364461738002594,
+      0.9359795134443022,
+      0.9355246523388117,
+      0.9350811485642946,
+      0.9346485819975339,
+      0.9342265529841657,
+      0.9338146811070999,
+      0.9334126040428062,
+      0.9330199764982373,
+      0.9326364692218351,
+      0.9322617680826636,
+      0.9318955732122588,
+      0.9315375982042648,
+      0.9311875693673696,
+      0.9308452250274424,
+      0.9305103148751357,
+      0.9301825993555317,
+      0.9298618490967057,
+      0.9295478443743428,
+      0.9292403746097815,
+      0.9289392378990731,
+      0.928644240570846,
+      0.9283551967709385
+    ],
+    "lyapunov_V": [],
+    "n_packets_dropped": 0,
+    "n_packets_generated": 48,
+    "queue_length": 54,
+    "material_remaining": 186.0,
+    "ant_contributions": {
+      "ant_0": {
+        "vertices_created": 1,
+        "edges_created": 0,
+        "info_discovered": 0.07591907973733504,
+        "contribution_score": 0.02587781454965925
+      },
+      "ant_1": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.008785531427676824,
+        "contribution_score": 0.0
+      },
+      "ant_2": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.01301180415514583,
+        "contribution_score": 0.0
+      },
+      "ant_3": {
+        "vertices_created": 1,
+        "edges_created": 2,
+        "info_discovered": 0.0910610076495219,
+        "contribution_score": 0.23875208833188244
+      },
+      "ant_4": {
+        "vertices_created": 1,
+        "edges_created": 0,
+        "info_discovered": 0.09710934371193487,
+        "contribution_score": 0.03719576772610413
+      },
+      "ant_5": {
+        "vertices_created": 0,
+        "edges_created": 2,
+        "info_discovered": 0.01330511490307789,
+        "contribution_score": 0.2
+      },
+      "ant_6": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.02217331339035242,
+        "contribution_score": 0.0
+      },
+      "ant_7": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.0027260017295530504,
+        "contribution_score": 0.0
+      },
+      "ant_8": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.04370456433844967,
+        "contribution_score": 0.0
+      },
+      "ant_9": {
+        "vertices_created": 1,
+        "edges_created": 2,
+        "info_discovered": 0.09780009899524846,
+        "contribution_score": 0.24509758305340373
+      },
+      "ant_10": {
+        "vertices_created": 0,
+        "edges_created": 2,
+        "info_discovered": 0.005495453153183783,
+        "contribution_score": 0.2
+      },
+      "ant_11": {
+        "vertices_created": 1,
+        "edges_created": 2,
+        "info_discovered": 0.10295541299133347,
+        "contribution_score": 0.24902310290450416
+      },
+      "ant_12": {
+        "vertices_created": 1,
+        "edges_created": 2,
+        "info_discovered": 0.13011059425964114,
+        "contribution_score": 0.2641091673472827
+      },
+      "ant_13": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.015667215972186007,
+        "contribution_score": 0.0
+      },
+      "ant_14": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.012003353315416588,
+        "contribution_score": 0.0
+      },
+      "ant_15": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.015643845693756764,
+        "contribution_score": 0.0
+      },
+      "ant_16": {
+        "vertices_created": 1,
+        "edges_created": 2,
+        "info_discovered": 0.0678269702045901,
+        "contribution_score": 0.22658983951245187
+      },
+      "ant_17": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.015301322294248305,
+        "contribution_score": 0.0
+      },
+      "ant_18": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.00011086851904505234,
+        "contribution_score": 0.0
+      },
+      "ant_19": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.011795554175919242,
+        "contribution_score": 0.0
+      },
+      "ant_20": {
+        "vertices_created": 0,
+        "edges_created": 2,
+        "info_discovered": 0.02159748194744569,
+        "contribution_score": 0.2
+      },
+      "ant_21": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.020330920018777173,
+        "contribution_score": 0.0
+      },
+      "ant_22": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.0008232809540646495,
+        "contribution_score": 0.0
+      },
+      "ant_23": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.00309913568023922,
+        "contribution_score": 0.0
+      },
+      "ant_24": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.025145340285876602,
+        "contribution_score": 0.0
+      },
+      "ant_25": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.0062164281254868635,
+        "contribution_score": 0.0
+      },
+      "ant_26": {
+        "vertices_created": 1,
+        "edges_created": 4,
+        "info_discovered": 0.0746590722471213,
+        "contribution_score": 0.4287768138882051
+      },
+      "ant_27": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.017122326163754958,
+        "contribution_score": 0.0
+      },
+      "ant_28": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.03200853435154577,
+        "contribution_score": 0.0
+      },
+      "ant_29": {
+        "vertices_created": 1,
+        "edges_created": 0,
+        "info_discovered": 0.0803277272910173,
+        "contribution_score": 0.0291340450450341
+      },
+      "ant_30": {
+        "vertices_created": 1,
+        "edges_created": 4,
+        "info_discovered": 0.06646823558684581,
+        "contribution_score": 0.42592007645947405
+      },
+      "ant_31": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.02048940814074633,
+        "contribution_score": 0.0
+      },
+      "ant_32": {
+        "vertices_created": 1,
+        "edges_created": 4,
+        "info_discovered": 0.07177477691601128,
+        "contribution_score": 0.4276130382485887
+      },
+      "ant_33": {
+        "vertices_created": 0,
+        "edges_created": 2,
+        "info_discovered": 0.02272823693540692,
+        "contribution_score": 0.2
+      },
+      "ant_34": {
+        "vertices_created": 0,
+        "edges_created": 2,
+        "info_discovered": 0.00316305578982171,
+        "contribution_score": 0.2
+      },
+      "ant_35": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 9.378304972992007e-05,
+        "contribution_score": 0.0
+      },
+      "ant_36": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.0006382228527176073,
+        "contribution_score": 0.0
+      },
+      "ant_37": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.09127643057197045,
+        "contribution_score": 0.0
+      },
+      "ant_38": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.006125705923792693,
+        "contribution_score": 0.0
+      },
+      "ant_39": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.002013883539289418,
+        "contribution_score": 0.0
+      },
+      "ant_40": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.01189608437676365,
+        "contribution_score": 0.0
+      },
+      "ant_41": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.0028882973600975774,
+        "contribution_score": 0.0
+      },
+      "ant_42": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.024411050947396127,
+        "contribution_score": 0.0
+      },
+      "ant_43": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.02238232308038202,
+        "contribution_score": 0.0
+      },
+      "ant_44": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.013229029457221311,
+        "contribution_score": 0.0
+      },
+      "ant_45": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.00013843581194529408,
+        "contribution_score": 0.0
+      },
+      "ant_46": {
+        "vertices_created": 1,
+        "edges_created": 2,
+        "info_discovered": 0.07787951746572827,
+        "contribution_score": 0.23192836451102078
+      },
+      "ant_47": {
+        "vertices_created": 1,
+        "edges_created": 0,
+        "info_discovered": 0.1789860578233247,
+        "contribution_score": 0.06586580823309322
+      },
+      "ant_48": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.017111412073414,
+        "contribution_score": 0.0
+      },
+      "ant_49": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.020221300727672666,
+        "contribution_score": 0.0
+      },
+      "ant_50": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.03568230990689373,
+        "contribution_score": 0.0
+      },
+      "ant_51": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.023794169796060784,
+        "contribution_score": 0.0
+      },
+      "ant_52": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.00015577665192548774,
+        "contribution_score": 0.0
+      },
+      "ant_53": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.047563931605557,
+        "contribution_score": 0.0
+      },
+      "ant_54": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.02384210916333175,
+        "contribution_score": 0.0
+      },
+      "ant_55": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.006182868691727381,
+        "contribution_score": 0.0
+      },
+      "ant_56": {
+        "vertices_created": 1,
+        "edges_created": 0,
+        "info_discovered": 0.12805430354378766,
+        "contribution_score": 0.051836161877552855
+      },
+      "ant_57": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.0029707354976914553,
+        "contribution_score": 0.0
+      },
+      "ant_58": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.0036379972476520634,
+        "contribution_score": 0.0
+      },
+      "ant_59": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.01202392570380569,
+        "contribution_score": 0.0
+      },
+      "ant_60": {
+        "vertices_created": 2,
+        "edges_created": 8,
+        "info_discovered": 0.17757278958925765,
+        "contribution_score": 0.8819512371461713
+      },
+      "ant_61": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.035079040055611105,
+        "contribution_score": 0.0
+      },
+      "ant_62": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.0012877749534764204,
+        "contribution_score": 0.0
+      },
+      "ant_63": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.005169140146268228,
+        "contribution_score": 0.0
+      },
+      "ant_64": {
+        "vertices_created": 0,
+        "edges_created": 2,
+        "info_discovered": 0.012967275314694252,
+        "contribution_score": 0.2
+      },
+      "ant_65": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.003725829059826352,
+        "contribution_score": 0.0
+      },
+      "ant_66": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.028606440702309444,
+        "contribution_score": 0.0
+      },
+      "ant_67": {
+        "vertices_created": 1,
+        "edges_created": 2,
+        "info_discovered": 0.07466897055689051,
+        "contribution_score": 0.22730918583953932
+      },
+      "ant_68": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.019659168122446245,
+        "contribution_score": 0.0
+      },
+      "ant_69": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.048384390630509776,
+        "contribution_score": 0.0
+      },
+      "ant_70": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.016470493557991413,
+        "contribution_score": 0.0
+      },
+      "ant_71": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.015801616064387264,
+        "contribution_score": 0.0
+      },
+      "ant_72": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.004740766163439094,
+        "contribution_score": 0.0
+      },
+      "ant_73": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.015341373959526316,
+        "contribution_score": 0.0
+      },
+      "ant_74": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.00491912452001241,
+        "contribution_score": 0.0
+      },
+      "ant_75": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.016538936971616222,
+        "contribution_score": 0.0
+      },
+      "ant_76": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.02444611811132143,
+        "contribution_score": 0.0
+      },
+      "ant_77": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.0007755584169126585,
+        "contribution_score": 0.0
+      },
+      "ant_78": {
+        "vertices_created": 0,
+        "edges_created": 2,
+        "info_discovered": 0.015042034903080204,
+        "contribution_score": 0.2
+      },
+      "ant_79": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.03386429236583086,
+        "contribution_score": 0.0
+      },
+      "ant_80": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.007691785933108355,
+        "contribution_score": 0.0
+      },
+      "ant_81": {
+        "vertices_created": 1,
+        "edges_created": 0,
+        "info_discovered": 0.1300946167835778,
+        "contribution_score": 0.04814161718906932
+      },
+      "ant_82": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.015231918974610585,
+        "contribution_score": 0.0
+      },
+      "ant_83": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.024071237692196292,
+        "contribution_score": 0.0
+      },
+      "ant_84": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.013933109703363053,
+        "contribution_score": 0.0
+      },
+      "ant_85": {
+        "vertices_created": 1,
+        "edges_created": 2,
+        "info_discovered": 0.10749321415032173,
+        "contribution_score": 0.24704374528562312
+      },
+      "ant_86": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.012378935974570442,
+        "contribution_score": 0.0
+      },
+      "ant_87": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.00014650074325350433,
+        "contribution_score": 0.0
+      },
+      "ant_88": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.04209545621777359,
+        "contribution_score": 0.0
+      },
+      "ant_89": {
+        "vertices_created": 1,
+        "edges_created": 0,
+        "info_discovered": 0.09629552411156948,
+        "contribution_score": 0.03947874369716756
+      },
+      "ant_90": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.004292419028501326,
+        "contribution_score": 0.0
+      },
+      "ant_91": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.002600997908355935,
+        "contribution_score": 0.0
+      },
+      "ant_92": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.003220104969859749,
+        "contribution_score": 0.0
+      },
+      "ant_93": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.008827650863978923,
+        "contribution_score": 0.0
+      },
+      "ant_94": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 9.339894437091957e-05,
+        "contribution_score": 0.0
+      },
+      "ant_95": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.06121405812972784,
+        "contribution_score": 0.0
+      },
+      "ant_96": {
+        "vertices_created": 0,
+        "edges_created": 2,
+        "info_discovered": 0.00708985235218873,
+        "contribution_score": 0.2
+      },
+      "ant_97": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.021679383014415663,
+        "contribution_score": 0.0
+      },
+      "ant_98": {
+        "vertices_created": 0,
+        "edges_created": 2,
+        "info_discovered": 0.014762866665995945,
+        "contribution_score": 0.2
+      },
+      "ant_99": {
+        "vertices_created": 0,
+        "edges_created": 2,
+        "info_discovered": 0.017249906669648932,
+        "contribution_score": 0.2
+      },
+      "ant_100": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.005604707589366648,
+        "contribution_score": 0.0
+      },
+      "ant_101": {
+        "vertices_created": 0,
+        "edges_created": 4,
+        "info_discovered": 0.0046606464907825215,
+        "contribution_score": 0.4
+      },
+      "ant_102": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.00754908282117531,
+        "contribution_score": 0.0
+      },
+      "ant_103": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.007078210195122504,
+        "contribution_score": 0.0
+      },
+      "ant_104": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.03621619119925052,
+        "contribution_score": 0.0
+      },
+      "ant_105": {
+        "vertices_created": 1,
+        "edges_created": 0,
+        "info_discovered": 0.16460412654640408,
+        "contribution_score": 0.07048667670538587
+      },
+      "ant_106": {
+        "vertices_created": 0,
+        "edges_created": 2,
+        "info_discovered": 0.04906418581161118,
+        "contribution_score": 0.2
+      },
+      "ant_107": {
+        "vertices_created": 0,
+        "edges_created": 2,
+        "info_discovered": 0.040531173669003745,
+        "contribution_score": 0.2
+      },
+      "ant_108": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.021590268878459648,
+        "contribution_score": 0.0
+      },
+      "ant_109": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.010069901182227491,
+        "contribution_score": 0.0
+      },
+      "ant_110": {
+        "vertices_created": 1,
+        "edges_created": 4,
+        "info_discovered": 0.07897100931355679,
+        "contribution_score": 0.42910053485829347
+      },
+      "ant_111": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.003489217988588402,
+        "contribution_score": 0.0
+      },
+      "ant_112": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.028043209433800547,
+        "contribution_score": 0.0
+      },
+      "ant_113": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.019763783522049074,
+        "contribution_score": 0.0
+      },
+      "ant_114": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.00015423404327877819,
+        "contribution_score": 0.0
+      },
+      "ant_115": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.023053399293866232,
+        "contribution_score": 0.0
+      },
+      "ant_116": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.012973092697509127,
+        "contribution_score": 0.0
+      },
+      "ant_117": {
+        "vertices_created": 1,
+        "edges_created": 2,
+        "info_discovered": 0.07258294232762352,
+        "contribution_score": 0.23624414701230756
+      },
+      "ant_118": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.011034503940464568,
+        "contribution_score": 0.0
+      },
+      "ant_119": {
+        "vertices_created": 0,
+        "edges_created": 2,
+        "info_discovered": 0.009562802392677426,
+        "contribution_score": 0.2
+      },
+      "ant_120": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.012223233201970817,
+        "contribution_score": 0.0
+      },
+      "ant_121": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.026629886577079823,
+        "contribution_score": 0.0
+      },
+      "ant_122": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.016912503749244034,
+        "contribution_score": 0.0
+      },
+      "ant_123": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.02722104173079874,
+        "contribution_score": 0.0
+      },
+      "ant_124": {
+        "vertices_created": 0,
+        "edges_created": 2,
+        "info_discovered": 0.00715501228679536,
+        "contribution_score": 0.2
+      },
+      "ant_125": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.019789624638728732,
+        "contribution_score": 0.0
+      },
+      "ant_126": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.04359606148226345,
+        "contribution_score": 0.0
+      },
+      "ant_127": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.02599710007434088,
+        "contribution_score": 0.0
+      },
+      "ant_128": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.00024230419108143316,
+        "contribution_score": 0.0
+      },
+      "ant_129": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.003987677019527632,
+        "contribution_score": 0.0
+      },
+      "ant_130": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.04786282327182926,
+        "contribution_score": 0.0
+      },
+      "ant_131": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.00016502313995563216,
+        "contribution_score": 0.0
+      },
+      "ant_132": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.02249767954427819,
+        "contribution_score": 0.0
+      },
+      "ant_133": {
+        "vertices_created": 0,
+        "edges_created": 4,
+        "info_discovered": 0.050376060991787854,
+        "contribution_score": 0.4
+      },
+      "ant_134": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.045147038611624404,
+        "contribution_score": 0.0
+      },
+      "ant_135": {
+        "vertices_created": 1,
+        "edges_created": 0,
+        "info_discovered": 0.11556864611961067,
+        "contribution_score": 0.05324196099602901
+      },
+      "ant_136": {
+        "vertices_created": 0,
+        "edges_created": 2,
+        "info_discovered": 0.00928399893783772,
+        "contribution_score": 0.2
+      },
+      "ant_137": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.02463189016719625,
+        "contribution_score": 0.0
+      },
+      "ant_138": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.03394417099375245,
+        "contribution_score": 0.0
+      },
+      "ant_139": {
+        "vertices_created": 0,
+        "edges_created": 2,
+        "info_discovered": 0.0239475913663833,
+        "contribution_score": 0.2
+      },
+      "ant_140": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.035986653029940606,
+        "contribution_score": 0.0
+      },
+      "ant_141": {
+        "vertices_created": 1,
+        "edges_created": 2,
+        "info_discovered": 0.10090823207765423,
+        "contribution_score": 0.2430983138215424
+      },
+      "ant_142": {
+        "vertices_created": 0,
+        "edges_created": 4,
+        "info_discovered": 0.029451555278990234,
+        "contribution_score": 0.4
+      },
+      "ant_143": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.013194195914123463,
+        "contribution_score": 0.0
+      },
+      "ant_144": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.01766725907234864,
+        "contribution_score": 0.0
+      },
+      "ant_145": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.01010921114042129,
+        "contribution_score": 0.0
+      },
+      "ant_146": {
+        "vertices_created": 0,
+        "edges_created": 2,
+        "info_discovered": 0.01947173082868339,
+        "contribution_score": 0.2
+      },
+      "ant_147": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.00871673013002327,
+        "contribution_score": 0.0
+      },
+      "ant_148": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.010404963309681879,
+        "contribution_score": 0.0
+      },
+      "ant_149": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.011073882762202218,
+        "contribution_score": 0.0
+      },
+      "ant_150": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.011825630161196955,
+        "contribution_score": 0.0
+      },
+      "ant_151": {
+        "vertices_created": 1,
+        "edges_created": 2,
+        "info_discovered": 0.0852175615727198,
+        "contribution_score": 0.24201614702623986
+      },
+      "ant_152": {
+        "vertices_created": 0,
+        "edges_created": 2,
+        "info_discovered": 0.026487445201286732,
+        "contribution_score": 0.2
+      },
+      "ant_153": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.021593515869590657,
+        "contribution_score": 0.0
+      },
+      "ant_154": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.0035712514023297833,
+        "contribution_score": 0.0
+      },
+      "ant_155": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.006591723085949783,
+        "contribution_score": 0.0
+      },
+      "ant_156": {
+        "vertices_created": 1,
+        "edges_created": 0,
+        "info_discovered": 0.07341531610813509,
+        "contribution_score": 0.03586515382501502
+      },
+      "ant_157": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.010899834048926124,
+        "contribution_score": 0.0
+      },
+      "ant_158": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.015913740461303044,
+        "contribution_score": 0.0
+      },
+      "ant_159": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.027866306568654974,
+        "contribution_score": 0.0
+      },
+      "ant_160": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 9.373689216442072e-05,
+        "contribution_score": 0.0
+      },
+      "ant_161": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.0005433944310493542,
+        "contribution_score": 0.0
+      },
+      "ant_162": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.013482357835697076,
+        "contribution_score": 0.0
+      },
+      "ant_163": {
+        "vertices_created": 0,
+        "edges_created": 2,
+        "info_discovered": 0.023938557162048978,
+        "contribution_score": 0.2
+      },
+      "ant_164": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.02488966640843374,
+        "contribution_score": 0.0
+      },
+      "ant_165": {
+        "vertices_created": 1,
+        "edges_created": 0,
+        "info_discovered": 0.09166515615881804,
+        "contribution_score": 0.02555569753831368
+      },
+      "ant_166": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.004039688586326781,
+        "contribution_score": 0.0
+      },
+      "ant_167": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.01798648725183,
+        "contribution_score": 0.0
+      },
+      "ant_168": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.01730683207228997,
+        "contribution_score": 0.0
+      },
+      "ant_169": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.06706400657291212,
+        "contribution_score": 0.0
+      },
+      "ant_170": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.012260117875411694,
+        "contribution_score": 0.0
+      },
+      "ant_171": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.004349446463719488,
+        "contribution_score": 0.0
+      },
+      "ant_172": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.002107267577447767,
+        "contribution_score": 0.0
+      },
+      "ant_173": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.009996224130723437,
+        "contribution_score": 0.0
+      },
+      "ant_174": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.010885062826258328,
+        "contribution_score": 0.0
+      },
+      "ant_175": {
+        "vertices_created": 0,
+        "edges_created": 2,
+        "info_discovered": 0.020114562346306427,
+        "contribution_score": 0.2
+      },
+      "ant_176": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.05956651315890658,
+        "contribution_score": 0.0
+      },
+      "ant_177": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 7.068454751054937e-05,
+        "contribution_score": 0.0
+      },
+      "ant_178": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.004873174485358369,
+        "contribution_score": 0.0
+      },
+      "ant_179": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.004174937921641278,
+        "contribution_score": 0.0
+      },
+      "ant_180": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.03777577357438976,
+        "contribution_score": 0.0
+      },
+      "ant_181": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.00011176286926126474,
+        "contribution_score": 0.0
+      },
+      "ant_182": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.010264043440185902,
+        "contribution_score": 0.0
+      },
+      "ant_183": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.02179244328673883,
+        "contribution_score": 0.0
+      },
+      "ant_184": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.01723089609824968,
+        "contribution_score": 0.0
+      },
+      "ant_185": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.03973560204108799,
+        "contribution_score": 0.0
+      },
+      "ant_186": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.04665358910184479,
+        "contribution_score": 0.0
+      },
+      "ant_187": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.005485900731454052,
+        "contribution_score": 0.0
+      },
+      "ant_188": {
+        "vertices_created": 0,
+        "edges_created": 2,
+        "info_discovered": 0.030571904355709896,
+        "contribution_score": 0.2
+      },
+      "ant_189": {
+        "vertices_created": 0,
+        "edges_created": 2,
+        "info_discovered": 0.05186639836483924,
+        "contribution_score": 0.2
+      },
+      "ant_190": {
+        "vertices_created": 1,
+        "edges_created": 4,
+        "info_discovered": 0.0819055099896069,
+        "contribution_score": 0.4254662040791865
+      },
+      "ant_191": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.01740083292017773,
+        "contribution_score": 0.0
+      },
+      "ant_192": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.014076661783608524,
+        "contribution_score": 0.0
+      },
+      "ant_193": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.00010108752284552723,
+        "contribution_score": 0.0
+      },
+      "ant_194": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.0008714828959004447,
+        "contribution_score": 0.0
+      },
+      "ant_195": {
+        "vertices_created": 1,
+        "edges_created": 2,
+        "info_discovered": 0.1299258663752208,
+        "contribution_score": 0.24521555711924178
+      },
+      "ant_196": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.012065899708070506,
+        "contribution_score": 0.0
+      },
+      "ant_197": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.004117849864466941,
+        "contribution_score": 0.0
+      },
+      "ant_198": {
+        "vertices_created": 0,
+        "edges_created": 0,
+        "info_discovered": 0.0019804085104119964,
+        "contribution_score": 0.0
+      },
+      "ant_199": {
+        "vertices_created": 0,
+        "edges_created": 2,
+        "info_discovered": 0.0005445014674701496,
+        "contribution_score": 0.2
+      }
+    },
+    "vertices_per_ant": 0.15,
+    "bekenstein_thermalization_events": 9925,
+    "thermodynamic_heat": 536.102791172925,
+    "total_entropy": 777.0455097650133,
+    "mean_metric_perturbation": 6.41070458560162e-05,
+    "plasticity_deaths": 0,
+    "plasticity_danger_zones": 0,
+    "plasticity_social_learning": 1801,
+    "plasticity_adaptations": 0
+  },
+  "n_agents_alive": {
+    "beavers": 50,
+    "ants": 200,
+    "bees": 100
+  }
+}

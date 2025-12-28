@@ -1,0 +1,92 @@
+2025-12-28 07:56:52,945 - EnhancedBlackholeArchive - INFO - Initializing enhanced spacetime...
+2025-12-28 07:56:53,630 - EnhancedBlackholeArchive - INFO - Initializing semantic graph...
+2025-12-28 07:56:53,630 - EnhancedBlackholeArchive - INFO - Seeding semantic graph with 15 initial vertices
+2025-12-28 07:56:53,631 - EnhancedBlackholeArchive - INFO - Semantic graph seeded with 15 vertices
+2025-12-28 07:56:53,631 - EnhancedBlackholeArchive - INFO - Initializing agents...
+2025-12-28 07:56:53,634 - EnhancedBlackholeArchive - INFO - Initializing Overmind meta-controller...
+2025-12-28 07:56:53,634 - EnhancedBlackholeArchive - INFO - Initializing Adversarial Pressure Layer (Phase II)...
+2025-12-28 07:56:53,635 - EnhancedBlackholeArchive - INFO - Initializing Agent Plasticity System...
+2025-12-28 07:56:53,636 - EnhancedBlackholeArchive - INFO - Enhanced simulation engine initialized
+2025-12-28 07:56:53,636 - EnhancedBlackholeArchive - INFO - Starting enhanced simulation: 10000 steps
+2025-12-28 07:56:53,919 - APL - INFO - APL triggered: noise_injection (strength=0.01)
+2025-12-28 07:56:53,919 - EnhancedBlackholeArchive - INFO - APL triggered: noise_injection (budget=5.0, threat=0.100)
+2025-12-28 07:56:53,945 - EnhancedBlackholeArchive - INFO - Step 0/10000, t=0.00, Energy=362.21, Vertices=29, V/Ant=0.07, Structures=35, Packets=0, Queue=11, Materials=465
+2025-12-28 07:56:55,133 - APL - INFO - APL triggered: erosion (strength=0.00)
+2025-12-28 07:56:55,134 - EnhancedBlackholeArchive - INFO - APL triggered: erosion (budget=5.1, threat=0.100)
+2025-12-28 07:56:56,405 - APL - INFO - APL triggered: noise_injection (strength=0.01)
+2025-12-28 07:56:56,406 - EnhancedBlackholeArchive - INFO - APL triggered: noise_injection (budget=5.1, threat=0.100)
+2025-12-28 07:56:59,022 - APL - INFO - APL triggered: semantic_decay (strength=0.01)
+2025-12-28 07:56:59,023 - EnhancedBlackholeArchive - INFO - APL triggered: semantic_decay (budget=5.2, threat=0.101)
+2025-12-28 07:57:01,753 - APL - INFO - APL triggered: maintenance_tax (strength=0.01)
+2025-12-28 07:57:01,753 - APL - INFO - APL triggered: structural_decay (strength=0.00)
+2025-12-28 07:57:01,756 - EnhancedBlackholeArchive - INFO - APL triggered: maintenance_tax, structural_decay (budget=5.4, threat=0.102)
+2025-12-28 07:57:07,261 - APL - INFO - APL triggered: congestion (strength=0.02)
+2025-12-28 07:57:07,264 - EnhancedBlackholeArchive - INFO - APL triggered: congestion (budget=5.6, threat=0.105)
+2025-12-28 07:57:18,069 - APL - INFO - APL triggered: semantic_decay (strength=0.01)
+2025-12-28 07:57:18,070 - APL - INFO - APL triggered: congestion (strength=0.02)
+2025-12-28 07:57:18,072 - EnhancedBlackholeArchive - INFO - APL triggered: semantic_decay, congestion (budget=6.0, threat=0.112)
+2025-12-28 07:57:20,959 - EnhancedBlackholeArchive - INFO - Step 100/10000, t=1.00, Energy=401.98, Vertices=38, V/Ant=0.12, Structures=74, Packets=3, Queue=27, Materials=426
+2025-12-28 07:57:46,415 - EnhancedBlackholeArchive - INFO - Step 200/10000, t=2.00, Energy=406.07, Vertices=39, V/Ant=0.12, Structures=82, Packets=3, Queue=27, Materials=418
+2025-12-28 07:58:11,842 - EnhancedBlackholeArchive - INFO - Step 300/10000, t=3.00, Energy=403.51, Vertices=40, V/Ant=0.12, Structures=122, Packets=4, Queue=27, Materials=378
+2025-12-28 07:58:37,494 - EnhancedBlackholeArchive - INFO - Step 400/10000, t=4.00, Energy=399.81, Vertices=40, V/Ant=0.12, Structures=148, Packets=4, Queue=28, Materials=352
+2025-12-28 07:59:03,105 - EnhancedBlackholeArchive - INFO - Step 500/10000, t=5.00, Energy=395.14, Vertices=42, V/Ant=0.14, Structures=172, Packets=4, Queue=28, Materials=328
+2025-12-28 07:59:28,867 - EnhancedBlackholeArchive - INFO - Step 600/10000, t=6.00, Energy=390.02, Vertices=44, V/Ant=0.14, Structures=213, Packets=4, Queue=30, Materials=287
+2025-12-28 08:00:36,795 - EnhancedBlackholeArchive - INFO - Initializing enhanced spacetime...
+2025-12-28 08:00:37,487 - EnhancedBlackholeArchive - INFO - Initializing semantic graph...
+2025-12-28 08:00:37,487 - EnhancedBlackholeArchive - INFO - Seeding semantic graph with 15 initial vertices
+2025-12-28 08:00:37,488 - EnhancedBlackholeArchive - INFO - Semantic graph seeded with 15 vertices
+2025-12-28 08:00:37,488 - EnhancedBlackholeArchive - INFO - Initializing agents...
+2025-12-28 08:00:37,491 - EnhancedBlackholeArchive - INFO - Initializing Overmind meta-controller...
+2025-12-28 08:00:37,491 - EnhancedBlackholeArchive - INFO - Initializing Adversarial Pressure Layer (Phase II)...
+2025-12-28 08:00:37,491 - EnhancedBlackholeArchive - INFO - Initializing Agent Plasticity System...
+2025-12-28 08:00:37,493 - EnhancedBlackholeArchive - INFO - Enhanced simulation engine initialized
+2025-12-28 08:00:37,493 - EnhancedBlackholeArchive - INFO - Starting enhanced simulation: 1000 steps
+2025-12-28 08:00:37,775 - APL - INFO - APL triggered: noise_injection (strength=0.01)
+2025-12-28 08:00:37,776 - EnhancedBlackholeArchive - INFO - APL triggered: noise_injection (budget=5.0, threat=0.100)
+2025-12-28 08:00:37,803 - EnhancedBlackholeArchive - INFO - Step 0/1000, t=0.00, Energy=362.21, Vertices=29, V/Ant=0.07, Structures=35, Packets=0, Queue=11, Materials=465
+2025-12-28 08:00:39,009 - APL - INFO - APL triggered: erosion (strength=0.00)
+2025-12-28 08:00:39,011 - EnhancedBlackholeArchive - INFO - APL triggered: erosion (budget=5.1, threat=0.100)
+2025-12-28 08:00:40,328 - APL - INFO - APL triggered: noise_injection (strength=0.01)
+2025-12-28 08:00:40,330 - EnhancedBlackholeArchive - INFO - APL triggered: noise_injection (budget=5.1, threat=0.100)
+2025-12-28 08:00:43,127 - APL - INFO - APL triggered: semantic_decay (strength=0.01)
+2025-12-28 08:00:43,128 - EnhancedBlackholeArchive - INFO - APL triggered: semantic_decay (budget=5.2, threat=0.101)
+2025-12-28 08:00:45,911 - APL - INFO - APL triggered: maintenance_tax (strength=0.01)
+2025-12-28 08:00:45,912 - APL - INFO - APL triggered: structural_decay (strength=0.00)
+2025-12-28 08:00:45,914 - EnhancedBlackholeArchive - INFO - APL triggered: maintenance_tax, structural_decay (budget=5.4, threat=0.102)
+2025-12-28 08:00:51,455 - APL - INFO - APL triggered: congestion (strength=0.02)
+2025-12-28 08:00:51,458 - EnhancedBlackholeArchive - INFO - APL triggered: congestion (budget=5.6, threat=0.105)
+2025-12-28 08:01:02,395 - APL - INFO - APL triggered: semantic_decay (strength=0.01)
+2025-12-28 08:01:02,395 - APL - INFO - APL triggered: congestion (strength=0.02)
+2025-12-28 08:01:02,398 - EnhancedBlackholeArchive - INFO - APL triggered: semantic_decay, congestion (budget=6.0, threat=0.112)
+2025-12-28 08:01:05,220 - EnhancedBlackholeArchive - INFO - Step 100/1000, t=1.00, Energy=401.98, Vertices=38, V/Ant=0.12, Structures=74, Packets=3, Queue=27, Materials=426
+2025-12-28 08:01:31,228 - EnhancedBlackholeArchive - INFO - Step 200/1000, t=2.00, Energy=406.07, Vertices=39, V/Ant=0.12, Structures=82, Packets=3, Queue=27, Materials=418
+2025-12-28 08:01:57,022 - EnhancedBlackholeArchive - INFO - Step 300/1000, t=3.00, Energy=403.51, Vertices=40, V/Ant=0.12, Structures=122, Packets=4, Queue=27, Materials=378
+2025-12-28 08:02:22,432 - EnhancedBlackholeArchive - INFO - Step 400/1000, t=4.00, Energy=399.81, Vertices=40, V/Ant=0.12, Structures=148, Packets=4, Queue=28, Materials=352
+2025-12-28 08:02:48,029 - EnhancedBlackholeArchive - INFO - Step 500/1000, t=5.00, Energy=395.14, Vertices=42, V/Ant=0.14, Structures=172, Packets=4, Queue=28, Materials=328
+2025-12-28 08:03:13,407 - EnhancedBlackholeArchive - INFO - Step 600/1000, t=6.00, Energy=390.02, Vertices=44, V/Ant=0.14, Structures=213, Packets=4, Queue=30, Materials=287
+2025-12-28 08:03:39,082 - EnhancedBlackholeArchive - INFO - Step 700/1000, t=7.00, Energy=384.88, Vertices=44, V/Ant=0.14, Structures=236, Packets=4, Queue=31, Materials=264
+2025-12-28 08:04:04,776 - EnhancedBlackholeArchive - INFO - Step 800/1000, t=8.00, Energy=378.86, Vertices=45, V/Ant=0.14, Structures=261, Packets=4, Queue=33, Materials=239
+2025-12-28 08:04:30,685 - EnhancedBlackholeArchive - INFO - Step 900/1000, t=9.00, Energy=372.23, Vertices=48, V/Ant=0.15, Structures=291, Packets=4, Queue=54, Materials=209
+2025-12-28 08:04:56,402 - EnhancedBlackholeArchive - INFO - Enhanced simulation complete
+2025-12-28 08:04:56,403 - EnhancedBlackholeArchive - INFO - 
+============================================================
+GRAPH LEDGER DUMP
+============================================================
+V_alive_current:        48
+E_alive_current:        1888
+V_created_total:        48
+V_created_rejected_cap: 0
+V_created_replaced:     0
+V_pruned_total:         0
+V_pruned_age:           0
+V_pruned_replaced:      0
+V_merged_total:         0
+V_noise_injected:       0
+V_removed_by_apl:       0
+MIN_STABLE_blocks:      0
+INVARIANT_violations:   0
+------------------------------------------------------------
+NET: created(48) - pruned(0) = 48
+VALIDATION: 48 should equal 63
+============================================================
+2025-12-28 08:04:56,405 - EnhancedBlackholeArchive - INFO - Enhanced report saved to enhanced_results/enhanced_simulation_report.json
