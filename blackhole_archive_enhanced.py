@@ -1932,13 +1932,22 @@ class SemanticGraph:
         Prevents unbounded growth from redundant beliefs.
 
         Threshold reduced from 2.0 to 1.0 to preserve more spatial diversity.
+        Now respects MIN_STABLE_VERTICES to prevent over-merging.
 
         Note: Uses SPATIAL distance only (r, theta, phi), not time component.
         """
         merged_count = 0
         vertices = list(self.graph.nodes())
 
+        # CRITICAL: Don't merge if already at or below minimum
+        if self.graph.number_of_nodes() <= self.MIN_STABLE_VERTICES:
+            return 0
+
         for i, v1 in enumerate(vertices):
+            # Stop if we've merged down to minimum
+            if self.graph.number_of_nodes() <= self.MIN_STABLE_VERTICES:
+                break
+
             if v1 not in self.graph:
                 continue
             if 'position' not in self.graph.nodes[v1]:
@@ -1959,6 +1968,10 @@ class SemanticGraph:
                     continue
 
                 if spatial_dist < distance_threshold:
+                    # CRITICAL: Check minimum before each merge
+                    if self.graph.number_of_nodes() <= self.MIN_STABLE_VERTICES:
+                        return merged_count
+
                     # Merge v2 into v1 (keep higher salience)
                     sal1 = self.graph.nodes[v1].get('salience', 0.5)
                     sal2 = self.graph.nodes[v2].get('salience', 0.5)
