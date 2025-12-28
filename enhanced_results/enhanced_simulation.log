@@ -90,3 +90,119 @@ NET: created(48) - pruned(0) = 48
 VALIDATION: 48 should equal 63
 ============================================================
 2025-12-28 08:04:56,405 - EnhancedBlackholeArchive - INFO - Enhanced report saved to enhanced_results/enhanced_simulation_report.json
+2025-12-28 08:11:03,134 - EnhancedBlackholeArchive - INFO - Initializing enhanced spacetime...
+2025-12-28 08:11:03,836 - EnhancedBlackholeArchive - INFO - Initializing semantic graph...
+2025-12-28 08:11:03,837 - EnhancedBlackholeArchive - INFO - Seeding semantic graph with 15 initial vertices
+2025-12-28 08:11:03,838 - EnhancedBlackholeArchive - INFO - Semantic graph seeded with 15 vertices
+2025-12-28 08:11:03,838 - EnhancedBlackholeArchive - INFO - Initializing agents...
+2025-12-28 08:11:03,841 - EnhancedBlackholeArchive - INFO - Initializing Overmind meta-controller...
+2025-12-28 08:11:03,841 - EnhancedBlackholeArchive - INFO - Initializing Adversarial Pressure Layer (Phase II)...
+2025-12-28 08:11:03,841 - EnhancedBlackholeArchive - INFO - Initializing Agent Plasticity System...
+2025-12-28 08:11:03,842 - EnhancedBlackholeArchive - INFO - Enhanced simulation engine initialized
+2025-12-28 08:11:03,842 - EnhancedBlackholeArchive - INFO - Starting enhanced simulation: 1000 steps
+2025-12-28 08:11:04,123 - APL - INFO - APL triggered: semantic_decay (strength=0.01)
+2025-12-28 08:11:04,124 - EnhancedBlackholeArchive - INFO - APL triggered: semantic_decay (budget=5.0, threat=0.100)
+2025-12-28 08:11:04,153 - EnhancedBlackholeArchive - INFO - Step 0/1000, t=0.00, Energy=369.26, Vertices=42, V/Ant=0.14, Structures=35, Packets=0, Queue=11, Materials=465
+2025-12-28 08:11:15,783 - APL - INFO - APL triggered: semantic_decay (strength=0.01)
+2025-12-28 08:11:15,784 - EnhancedBlackholeArchive - INFO - APL triggered: semantic_decay (budget=6.3, threat=0.108)
+2025-12-28 08:11:23,303 - APL - INFO - APL triggered: maintenance_tax (strength=0.01)
+2025-12-28 08:11:23,304 - APL - INFO - APL triggered: noise_injection (strength=0.01)
+2025-12-28 08:11:23,305 - EnhancedBlackholeArchive - INFO - APL triggered: maintenance_tax, noise_injection (budget=6.9, threat=0.115)
+2025-12-28 08:11:25,084 - APL - INFO - APL triggered: congestion (strength=0.02)
+2025-12-28 08:11:25,086 - EnhancedBlackholeArchive - INFO - APL triggered: congestion (budget=7.1, threat=0.118)
+2025-12-28 08:11:34,522 - APL - INFO - APL triggered: maintenance_tax (strength=0.01)
+2025-12-28 08:11:34,523 - EnhancedBlackholeArchive - INFO - APL triggered: maintenance_tax (budget=7.9, threat=0.130)
+2025-12-28 08:11:37,199 - APL - INFO - APL triggered: maintenance_tax (strength=0.01)
+2025-12-28 08:11:37,199 - APL - INFO - APL triggered: erosion (strength=0.00)
+2025-12-28 08:11:37,200 - APL - INFO - APL triggered: structural_decay (strength=0.00)
+2025-12-28 08:11:37,202 - EnhancedBlackholeArchive - INFO - APL triggered: maintenance_tax, erosion, structural_decay (budget=8.1, threat=0.133)
+2025-12-28 08:11:40,176 - APL - INFO - APL triggered: fatigue_wave (strength=0.10)
+2025-12-28 08:11:40,179 - EnhancedBlackholeArchive - INFO - APL triggered: fatigue_wave (budget=8.3, threat=0.136)
+2025-12-28 08:11:50,372 - EnhancedBlackholeArchive - INFO - Step 100/1000, t=1.00, Energy=465.68, Vertices=100, V/Ant=3.47, Structures=74, Packets=3, Queue=20, Materials=426
+2025-12-28 08:12:13,307 - APL - INFO - APL triggered: structural_decay (strength=0.00)
+2025-12-28 08:12:13,310 - EnhancedBlackholeArchive - INFO - APL triggered: structural_decay (budget=1.8, threat=0.071)
+2025-12-28 08:12:46,368 - APL - INFO - APL triggered: semantic_decay (strength=0.01)
+2025-12-28 08:12:46,371 - EnhancedBlackholeArchive - INFO - APL triggered: semantic_decay (budget=3.3, threat=0.060)
+2025-12-28 08:12:55,173 - EnhancedBlackholeArchive - INFO - Step 200/1000, t=2.00, Energy=472.72, Vertices=100, V/Ant=6.95, Structures=84, Packets=3, Queue=30, Materials=416
+2025-12-28 08:13:26,109 - APL - INFO - APL triggered: noise_injection (strength=0.01)
+2025-12-28 08:13:26,112 - EnhancedBlackholeArchive - INFO - APL triggered: noise_injection (budget=5.4, threat=0.082)
+2025-12-28 08:13:39,805 - APL - INFO - APL triggered: noise_injection (strength=0.01)
+2025-12-28 08:13:39,808 - EnhancedBlackholeArchive - INFO - APL triggered: noise_injection (budget=6.2, threat=0.095)
+2025-12-28 08:13:47,295 - APL - INFO - APL triggered: structural_decay (strength=0.00)
+2025-12-28 08:13:47,298 - EnhancedBlackholeArchive - INFO - APL triggered: structural_decay (budget=3.3, threat=0.095)
+2025-12-28 08:13:51,439 - APL - INFO - APL triggered: erosion (strength=0.00)
+2025-12-28 08:13:51,442 - EnhancedBlackholeArchive - INFO - APL triggered: erosion (budget=3.5, threat=0.092)
+2025-12-28 08:13:55,597 - APL - INFO - APL triggered: maintenance_tax (strength=0.01)
+2025-12-28 08:13:55,600 - EnhancedBlackholeArchive - INFO - APL triggered: maintenance_tax (budget=3.6, threat=0.090)
+2025-12-28 08:14:09,975 - EnhancedBlackholeArchive - INFO - Step 300/1000, t=3.00, Energy=477.38, Vertices=100, V/Ant=10.30, Structures=120, Packets=4, Queue=39, Materials=380
+2025-12-28 08:14:12,948 - APL - INFO - APL triggered: semantic_decay (strength=0.01)
+2025-12-28 08:14:12,951 - EnhancedBlackholeArchive - INFO - APL triggered: semantic_decay (budget=4.1, threat=0.086)
+2025-12-28 08:14:48,432 - APL - INFO - APL triggered: structural_decay (strength=0.00)
+2025-12-28 08:14:48,436 - EnhancedBlackholeArchive - INFO - APL triggered: structural_decay (budget=5.1, threat=0.091)
+2025-12-28 08:15:09,125 - APL - INFO - APL triggered: congestion (strength=0.02)
+2025-12-28 08:15:09,128 - EnhancedBlackholeArchive - INFO - APL triggered: congestion (budget=5.9, threat=0.100)
+2025-12-28 08:15:38,857 - EnhancedBlackholeArchive - INFO - Step 400/1000, t=4.00, Energy=478.70, Vertices=100, V/Ant=13.65, Structures=148, Packets=4, Queue=52, Materials=352
+2025-12-28 08:15:42,436 - APL - INFO - APL triggered: congestion (strength=0.02)
+2025-12-28 08:15:42,439 - EnhancedBlackholeArchive - INFO - APL triggered: congestion (budget=5.1, threat=0.114)
+2025-12-28 08:15:46,372 - APL - INFO - APL triggered: structural_decay (strength=0.00)
+2025-12-28 08:15:46,375 - EnhancedBlackholeArchive - INFO - APL triggered: structural_decay (budget=5.3, threat=0.113)
+2025-12-28 08:15:54,733 - APL - INFO - APL triggered: semantic_decay (strength=0.01)
+2025-12-28 08:15:54,736 - EnhancedBlackholeArchive - INFO - APL triggered: semantic_decay (budget=5.5, threat=0.112)
+2025-12-28 08:16:25,936 - APL - INFO - APL triggered: maintenance_tax (strength=0.01)
+2025-12-28 08:16:25,939 - EnhancedBlackholeArchive - INFO - APL triggered: maintenance_tax (budget=6.6, threat=0.117)
+2025-12-28 08:17:16,438 - EnhancedBlackholeArchive - INFO - Step 500/1000, t=5.00, Energy=479.29, Vertices=100, V/Ant=16.88, Structures=173, Packets=4, Queue=62, Materials=327
+2025-12-28 08:17:20,559 - APL - INFO - APL triggered: congestion (strength=0.02)
+2025-12-28 08:17:20,562 - EnhancedBlackholeArchive - INFO - APL triggered: congestion (budget=8.2, threat=0.142)
+2025-12-28 08:17:34,234 - APL - INFO - APL triggered: structural_decay (strength=0.00)
+2025-12-28 08:17:34,237 - EnhancedBlackholeArchive - INFO - APL triggered: structural_decay (budget=8.6, threat=0.149)
+2025-12-28 08:18:26,070 - APL - INFO - APL triggered: packet_loss (strength=0.20)
+2025-12-28 08:18:26,074 - EnhancedBlackholeArchive - INFO - APL triggered: packet_loss (budget=10.0, threat=0.175)
+2025-12-28 08:18:31,327 - APL - INFO - APL triggered: congestion (strength=0.02)
+2025-12-28 08:18:31,330 - EnhancedBlackholeArchive - INFO - APL triggered: congestion (budget=10.2, threat=0.178)
+2025-12-28 08:18:54,752 - APL - INFO - APL triggered: congestion (strength=0.02)
+2025-12-28 08:18:54,756 - EnhancedBlackholeArchive - INFO - APL triggered: congestion (budget=10.9, threat=0.190)
+2025-12-28 08:19:01,031 - EnhancedBlackholeArchive - INFO - Step 600/1000, t=6.00, Energy=476.21, Vertices=100, V/Ant=19.95, Structures=213, Packets=4, Queue=85, Materials=287
+2025-12-28 08:19:21,071 - APL - INFO - APL triggered: noise_injection (strength=0.01)
+2025-12-28 08:19:21,074 - EnhancedBlackholeArchive - INFO - APL triggered: noise_injection (budget=11.7, threat=0.206)
+2025-12-28 08:19:38,466 - APL - INFO - APL triggered: congestion (strength=0.02)
+2025-12-28 08:19:38,469 - EnhancedBlackholeArchive - INFO - APL triggered: congestion (budget=12.2, threat=0.215)
+2025-12-28 08:20:36,243 - APL - INFO - APL triggered: route_jamming (strength=0.30)
+2025-12-28 08:20:36,260 - EnhancedBlackholeArchive - INFO - APL triggered: route_jamming (budget=14.0, threat=0.249)
+2025-12-28 08:20:55,172 - EnhancedBlackholeArchive - INFO - Step 700/1000, t=7.00, Energy=476.38, Vertices=100, V/Ant=22.77, Structures=235, Packets=4, Queue=82, Materials=265
+2025-12-28 08:22:08,532 - APL - INFO - APL triggered: structural_decay (strength=0.00)
+2025-12-28 08:22:08,543 - EnhancedBlackholeArchive - INFO - APL triggered: structural_decay (budget=14.4, threat=0.276)
+2025-12-28 08:22:32,978 - APL - INFO - APL triggered: energy_drought (strength=0.20)
+2025-12-28 08:22:32,996 - EnhancedBlackholeArchive - INFO - APL triggered: energy_drought (budget=15.0, threat=0.283)
+2025-12-28 08:22:59,270 - EnhancedBlackholeArchive - INFO - Step 800/1000, t=8.00, Energy=475.30, Vertices=102, V/Ant=25.96, Structures=261, Packets=5, Queue=82, Materials=239
+2025-12-28 08:23:21,631 - APL - INFO - APL triggered: materials_scarcity (strength=0.60)
+2025-12-28 08:23:21,643 - EnhancedBlackholeArchive - INFO - APL triggered: materials_scarcity (budget=14.2, threat=0.287)
+2025-12-28 08:24:33,910 - APL - INFO - APL triggered: maintenance_tax (strength=0.01)
+2025-12-28 08:24:33,925 - EnhancedBlackholeArchive - INFO - APL triggered: maintenance_tax (budget=11.9, threat=0.263)
+2025-12-28 08:24:46,377 - APL - INFO - APL triggered: noise_injection (strength=0.01)
+2025-12-28 08:24:46,394 - EnhancedBlackholeArchive - INFO - APL triggered: noise_injection (budget=10.1, threat=0.251)
+2025-12-28 08:24:52,819 - APL - INFO - APL triggered: structural_decay (strength=0.00)
+2025-12-28 08:24:52,838 - EnhancedBlackholeArchive - INFO - APL triggered: structural_decay (budget=10.3, threat=0.247)
+2025-12-28 08:24:59,481 - EnhancedBlackholeArchive - INFO - Step 900/1000, t=9.00, Energy=471.88, Vertices=105, V/Ant=28.84, Structures=295, Packets=6, Queue=80, Materials=205
+2025-12-28 08:26:58,082 - EnhancedBlackholeArchive - INFO - Enhanced simulation complete
+2025-12-28 08:26:58,083 - EnhancedBlackholeArchive - INFO - 
+============================================================
+GRAPH LEDGER DUMP
+============================================================
+V_alive_current:        370
+E_alive_current:        44682
+V_created_total:        6300
+V_created_rejected_cap: 0
+V_created_replaced:     0
+V_pruned_total:         5930
+V_pruned_age:           0
+V_pruned_replaced:      0
+V_merged_total:         5930
+V_noise_injected:       0
+V_removed_by_apl:       0
+MIN_STABLE_blocks:      0
+INVARIANT_violations:   0
+------------------------------------------------------------
+NET: created(6300) - pruned(5930) = 370
+VALIDATION: 370 should equal 385
+============================================================
+2025-12-28 08:26:58,086 - EnhancedBlackholeArchive - INFO - Enhanced report saved to enhanced_results/enhanced_simulation_report.json

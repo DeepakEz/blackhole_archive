@@ -1280,9 +1280,14 @@ class EnhancedAntAgent(Agent):
         # LOWERED THRESHOLD: 0.15 → 0.05 - original was way too high for sparse info field
         if info_density > 0.05 and self.current_vertex is None:
             # Check for nearby existing vertices first (spatial co-occurrence)
-            nearby_vertex = self._find_nearby_vertex(semantic_graph, distance_threshold=2.0)
+            # REDUCED from 2.0 to 1.0: Tighter clustering for more vertex diversity
+            nearby_vertex = self._find_nearby_vertex(semantic_graph, distance_threshold=1.0)
 
-            if nearby_vertex is not None:
+            # CREATIVITY FACTOR: 30% chance to create new vertex even if nearby exists
+            # This encourages exploration and diverse graph structure for emergent intelligence
+            force_create = np.random.random() < 0.30
+
+            if nearby_vertex is not None and not force_create:
                 # Attach to existing vertex instead of creating new one
                 vertex_id = nearby_vertex
                 # Use mark_vertex_accessed for proper stability tracking
