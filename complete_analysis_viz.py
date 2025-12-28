@@ -548,13 +548,19 @@ ax3.grid(True, alpha=0.3, axis='y')
 
 # Panel 4: Energy distribution
 ax4 = fig2.add_subplot(gs2[1, 1])
-energy_dist = {
-    'Beavers': final_energy * (n_agents['beavers'] / (n_agents['beavers'] + n_agents['ants'] + n_agents['bees'])),
-    'Ants': final_energy * (n_agents['ants'] / (n_agents['beavers'] + n_agents['ants'] + n_agents['bees'])),
-    'Bees': final_energy * (n_agents['bees'] / (n_agents['beavers'] + n_agents['ants'] + n_agents['bees']))
-}
-ax4.pie(energy_dist.values(), labels=energy_dist.keys(), autopct='%1.1f%%',
-        colors=colors_list, startangle=90, textprops={'fontsize': 12, 'fontweight': 'bold'})
+total_agents = n_agents['beavers'] + n_agents['ants'] + n_agents['bees']
+if total_agents > 0:
+    energy_dist = {
+        'Beavers': final_energy * (n_agents['beavers'] / total_agents),
+        'Ants': final_energy * (n_agents['ants'] / total_agents),
+        'Bees': final_energy * (n_agents['bees'] / total_agents)
+    }
+    ax4.pie(energy_dist.values(), labels=energy_dist.keys(), autopct='%1.1f%%',
+            colors=colors_list, startangle=90, textprops={'fontsize': 12, 'fontweight': 'bold'})
+else:
+    # All agents dead - show empty pie with message
+    ax4.pie([1], labels=['No Survivors'], colors=['#cccccc'],
+            textprops={'fontsize': 12, 'fontweight': 'bold'})
 ax4.set_title('Final Energy Distribution by Colony', fontsize=14, fontweight='bold')
 
 plt.suptitle('BLACKHOLE ARCHIVE: Colony Performance Analysis', 

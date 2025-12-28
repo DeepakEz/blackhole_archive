@@ -67,6 +67,14 @@ except ImportError:
     APL_AVAILABLE = False
     AdversarialPressureLayer = None
 
+# Import Agent Plasticity System for emergent intelligence
+try:
+    from agent_plasticity import AgentPlasticitySystem, StrategyWeights
+    PLASTICITY_AVAILABLE = True
+except ImportError:
+    PLASTICITY_AVAILABLE = False
+    AgentPlasticitySystem = None
+
 # =============================================================================
 # THERMODYNAMIC CONSTANTS (replaces arbitrary magic numbers)
 # =============================================================================
@@ -2338,6 +2346,24 @@ class EnhancedSimulationEngine:
             self.apl_active = False
             self.logger.warning("APL not available - adversarial_pressure_layer.py not found")
 
+        # PHASE II: Initialize Agent Plasticity System for emergent intelligence
+        if PLASTICITY_AVAILABLE:
+            self.logger.info("Initializing Agent Plasticity System...")
+            self.plasticity = AgentPlasticitySystem({
+                'threat_decay_rate': 0.005,
+                'max_threat_memories': 200,
+                'social_radius': 10.0
+            })
+            self.plasticity_active = True
+            # Initialize all agents with plasticity
+            for colony_agents in self.agents.values():
+                for agent in colony_agents:
+                    self.plasticity.initialize_agent(agent.id)
+        else:
+            self.plasticity = None
+            self.plasticity_active = False
+            self.logger.warning("Plasticity not available - agent_plasticity.py not found")
+
         self.logger.info("Enhanced simulation engine initialized")
     
     def _setup_logging(self):
@@ -2659,6 +2685,64 @@ class EnhancedSimulationEngine:
                         f"threat={apl_result['threat_level']:.3f})"
                     )
 
+            # =================================================================
+            # AGENT PLASTICITY SYSTEM - Learning from experience
+            # =================================================================
+            if self.plasticity_active:
+                # Collect all agents for social learning
+                all_agents = [a for agents_list in self.agents.values() for a in agents_list]
+
+                for colony_name, agents_list in self.agents.items():
+                    for agent in agents_list:
+                        # Handle dead agents
+                        if agent.state == "dead" and agent.id in self.plasticity.agent_states:
+                            # Determine death cause from current conditions
+                            death_cause = "unknown"
+                            if agent.energy <= 0:
+                                death_cause = "energy_depletion"
+                            if hasattr(agent, 'position') and agent.position[1] < 3.0:
+                                death_cause = "horizon_crossing"
+
+                            conditions = {
+                                'energy': agent.energy,
+                                'r': agent.position[1] if hasattr(agent, 'position') else 0,
+                                'colony': colony_name
+                            }
+                            self.plasticity.on_agent_death(agent, death_cause, conditions, t)
+
+                        # Update plasticity for active agents and apply modifiers
+                        elif agent.state == "active":
+                            modifiers = self.plasticity.update_agent(agent, all_agents, self.config.dt)
+
+                            # Apply threat avoidance to velocity
+                            avoidance = modifiers.get('avoidance_vector', np.zeros(3))
+                            if np.linalg.norm(avoidance) > 0.01:
+                                # Blend avoidance into velocity
+                                danger_avoidance = modifiers.get('danger_avoidance', 0)
+                                agent.velocity[1:4] += 0.1 * danger_avoidance * avoidance
+
+                            # Record success when energy/contribution increases
+                            if hasattr(agent, 'contribution_score'):
+                                reward = getattr(agent, '_last_contribution', 0)
+                                current = agent.contribution_score
+                                if current > reward:
+                                    self.plasticity.on_agent_success(agent, current - reward)
+                                agent._last_contribution = current
+
+                # System-wide plasticity update (memory decay)
+                if step % 10 == 0:
+                    self.plasticity.update_system(self.config.dt * 10)
+
+                # Log plasticity metrics periodically
+                if step % 200 == 0:
+                    metrics = self.plasticity.get_metrics()
+                    if metrics['deaths_recorded'] > 0:
+                        self.logger.info(
+                            f"Plasticity: deaths={metrics['deaths_recorded']}, "
+                            f"danger_zones={metrics['danger_zones']}, "
+                            f"social_learning={metrics['social_learning_events']}"
+                        )
+
             # Update statistics
             self.stats['total_energy'] = sum(
                 a.energy for agents in self.agents.values() for a in agents if a.state == "active"
@@ -2701,6 +2785,14 @@ class EnhancedSimulationEngine:
             self.stats['thermodynamic_heat'] = thermo_stats['thermodynamic_heat']
             self.stats['total_entropy'] = thermo_stats['total_entropy']
             self.stats['mean_metric_perturbation'] = thermo_stats['mean_metric_perturbation']
+
+            # PLASTICITY metrics
+            if self.plasticity_active:
+                plasticity_metrics = self.plasticity.get_metrics()
+                self.stats['plasticity_deaths'] = plasticity_metrics['deaths_recorded']
+                self.stats['plasticity_danger_zones'] = plasticity_metrics['danger_zones']
+                self.stats['plasticity_social_learning'] = plasticity_metrics['social_learning_events']
+                self.stats['plasticity_adaptations'] = plasticity_metrics['strategies_adapted']
 
             # Simple stability check: energy should not decay too fast
             current_energy = self.stats['total_energy']
