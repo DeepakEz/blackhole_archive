@@ -100,10 +100,12 @@ python blackhole_archive_enhanced.py
 SIM_FAST=1 python blackhole_archive_enhanced.py
 
 # Live visualization mode - watch agents in real-time
-VIS=1 python blackhole_archive_enhanced.py
+VIS=1 python blackhole_archive_enhanced.py                    # Linux/Mac
+set VIS=1 && python blackhole_archive_enhanced.py             # Windows CMD
 
 # Combine: fast test with visualization
-VIS=1 SIM_FAST=1 python blackhole_archive_enhanced.py
+VIS=1 SIM_FAST=1 python blackhole_archive_enhanced.py         # Linux/Mac
+set VIS=1 && set SIM_FAST=1 && python blackhole_archive_enhanced.py  # Windows
 ```
 
 ### Enhanced Simulation
