@@ -29,6 +29,53 @@ This is **not** a metaphor. It's a rigorous framework that:
 
 Think: **Distributed database where network partitions are enforced by physics.**
 
+## Research Goals
+
+This project explores **emergent intelligence** through self-organizing multi-agent systems:
+
+### Core Research Questions
+
+1. **Self-Organizing Belief Networks**: Can agents collectively build and maintain complex knowledge structures (graph vertices) without central control?
+
+2. **Multi-Agent Cooperation**: How do heterogeneous colonies (Ants, Bees, Beavers) achieve collective cognition through local interactions?
+
+3. **Resilience Under Perturbation**: Can the system maintain coherence despite adversarial conditions (APL triggers: noise injection, fatigue waves, congestion)?
+
+4. **Graph Lifecycle Dynamics**: What is the optimal balance between merging (consolidation) and pruning (forgetting) to maintain healthy knowledge graphs?
+
+### Success Criteria
+
+A successful simulation demonstrates:
+- **Surviving colonies** through 10,000+ steps
+- **500+ stable vertices** (beliefs/concepts)
+- **Passing GraphLedger validation** (created - pruned - merged = alive)
+- **Healthy V/Ant ratio** (cognitive density per agent)
+
+This proves a **self-sustaining cognitive architecture** where agents collectively build knowledge that doesn't collapse or explode under perturbation.
+
+## Recent Fixes (December 2024)
+
+### Graph Collapse Fix ("Black Hole" Bug)
+
+**Problem**: The merge function was too aggressive, consuming vertices faster than they could be created. This caused the knowledge graph to collapse to minimal size.
+
+**Diagnosis via A/B Testing**:
+| Configuration | Vertices at Step 100 |
+|--------------|---------------------|
+| `DISABLE_MERGE=1` | 721 |
+| `threshold=0.3` | 115 (606 merges!) |
+| `threshold=0.05` + salience check | 204 ✓ |
+
+**Solution** (commit `3429fb1`):
+1. Reduced merge distance threshold: 0.3 → 0.05
+2. Added salience similarity requirement (within 0.3)
+3. Only true duplicates now merge, preserving semantic diversity
+
+**Results**:
+- 160% improvement in vertex retention
+- Healthy graph growth throughout simulation
+- GraphLedger validation passes
+
 ## Quick Start
 
 ### Installation
@@ -45,7 +92,28 @@ python blackhole_archive_main.py --mode demo
 
 # Run full simulation (warning: computationally intensive)
 python blackhole_archive_main.py --mode full --output ./results
+
+# Run enhanced simulation with all fixes (recommended)
+python blackhole_archive_enhanced.py
+
+# Quick test mode (1000 steps, faster iterations)
+SIM_FAST=1 python blackhole_archive_enhanced.py
 ```
+
+### Enhanced Simulation
+
+The enhanced simulation (`blackhole_archive_enhanced.py`) includes critical fixes and improvements:
+
+| Feature | Description |
+|---------|-------------|
+| **GraphLedger** | Tracks vertex lifecycle (created/pruned/merged) for validation |
+| **Conservative Merge** | Threshold 0.05 + salience similarity check prevents graph collapse |
+| **APL System** | Adaptive Perturbation Layer introduces realistic challenges |
+| **Energy Balance** | Proper energy conservation across all colony types |
+
+**Runtime Estimates:**
+- Quick test (`SIM_FAST=1`, 1000 steps): ~30 minutes
+- Full simulation (10,000 steps): ~19 hours
 
 ### Expected Output
 
@@ -455,27 +523,51 @@ Bio-inspired coordination:
 
 ## Future Work
 
-### Short-Term
+### Post-Run Analysis
 
-- [ ] Full numerical relativity (use Einstein Toolkit)
+After a successful 10,000 step simulation:
+- [ ] Pattern mining - analyze belief clusters and vertex connectivity
+- [ ] Temporal dynamics - identify when stability emerges and phase transitions
+- [ ] Colony mapping - understand specialization and territory formation
+- [ ] APL impact analysis - measure recovery times from perturbations
+
+### Cognitive Architecture Enhancements
+
+- [ ] **Hierarchical vertices**: Beliefs containing sub-beliefs (abstraction layers)
+- [ ] **Temporal decay**: Unused vertices fade over time (forgetting mechanism)
+- [ ] **Associative recall**: Query the graph for semantically related concepts
+- [ ] **Contradiction detection**: Identify and resolve conflicting beliefs
+- [ ] **Goal-directed behavior**: Agents pursue objectives beyond survival
+
+### Scaling Experiments
+
+| Scale | Colonies | Agents | Steps | Goal |
+|-------|----------|--------|-------|------|
+| Current | 3 | ~50 | 10K | Proof of concept |
+| Medium | 10 | 500 | 100K | Emergent societies |
+| Large | 50 | 5000 | 1M | Division of labor |
+
+### Technical Improvements
+
+- [ ] Full numerical relativity (Einstein Toolkit integration)
 - [ ] GPU-accelerated field evolution
 - [ ] Real-time 3D visualization
-- [ ] Hawking radiation simulation
-- [ ] Advanced error correction codes
-
-### Medium-Term
-
-- [ ] Machine learning for agent policies
 - [ ] Adaptive mesh refinement
-- [ ] Multi-wormhole networks
-- [ ] Quantum effects (Casimir energy)
-- [ ] Integration with other cognitive architectures
+- [ ] Machine learning for agent policies
 
-### Long-Term
+### Research Directions
+
+- [ ] **Language grounding**: Map vertices to natural language concepts
+- [ ] **External interaction**: Feed real-world data as environmental stimuli
+- [ ] **Comparative studies**: Benchmark against other cognitive architectures
+- [ ] **Information integration**: Measure Φ (integrated information theory)
+- [ ] **Perturbation studies**: Targeted attacks, resource scarcity, inter-colony competition
+
+### Long-Term Vision
 
 - [ ] Hardware implementation (neuromorphic chips)
-- [ ] Experimental validation (analog gravity)
-- [ ] Applications to cosmology (universe as archive)
+- [ ] Experimental validation (analog gravity systems)
+- [ ] Applications to cosmology (universe as information archive)
 - [ ] Connection to black hole information paradox
 - [ ] Practical distributed database implementation
 
