@@ -98,6 +98,12 @@ python blackhole_archive_enhanced.py
 
 # Quick test mode (1000 steps, faster iterations)
 SIM_FAST=1 python blackhole_archive_enhanced.py
+
+# Live visualization mode - watch agents in real-time
+VIS=1 python blackhole_archive_enhanced.py
+
+# Combine: fast test with visualization
+VIS=1 SIM_FAST=1 python blackhole_archive_enhanced.py
 ```
 
 ### Enhanced Simulation
@@ -110,10 +116,21 @@ The enhanced simulation (`blackhole_archive_enhanced.py`) includes critical fixe
 | **Conservative Merge** | Threshold 0.05 + salience similarity check prevents graph collapse |
 | **APL System** | Adaptive Perturbation Layer introduces realistic challenges |
 | **Energy Balance** | Proper energy conservation across all colony types |
+| **Vectorized Geodesics** | numpy einsum acceleration (3-5x faster) |
+| **Live Visualization** | Real-time agent positions, graph, and metrics |
 
 **Runtime Estimates:**
-- Quick test (`SIM_FAST=1`, 1000 steps): ~30 minutes
-- Full simulation (10,000 steps): ~19 hours
+- Quick test (`SIM_FAST=1`, 1000 steps): ~20 minutes
+- Full simulation (10,000 steps): ~12-14 hours
+- With visualization: ~30% slower (rendering overhead)
+
+### Live Visualization
+
+Run with `VIS=1` to see real-time:
+- **Agent positions** in r-θ projection (Beavers=brown, Ants=red, Bees=yellow)
+- **Knowledge graph** with salience-colored vertices
+- **Energy & vertex count** over time
+- **Live metrics** panel with colony status
 
 ### Expected Output
 
