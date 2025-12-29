@@ -3145,19 +3145,19 @@ class LiveVisualizer:
         Step: {step}  |  Time: {t:.2f}
 
         COLONIES
-        ─────────────────────
-        🦫 Beavers: {n_beavers} alive
-        🐜 Ants:    {n_ants} alive
-        🐝 Bees:    {n_bees} alive
+        ---------------------
+        Beavers: {n_beavers} alive
+        Ants:    {n_ants} alive
+        Bees:    {n_bees} alive
 
         KNOWLEDGE GRAPH
-        ─────────────────────
+        ---------------------
         Vertices:  {n_vertices}
         Edges:     {n_edges}
         V/Ant:     {n_vertices/max(1,n_ants):.2f}
 
         ACTIVITY
-        ─────────────────────
+        ---------------------
         Structures: {n_structures}
         Packets:    {n_packets}
         Energy:     {total_energy:.1f}
