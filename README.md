@@ -1,33 +1,33 @@
 # The Blackhole Archive Project
 
-**A Bio-Inspired Architecture for Information Extraction from Causally Hostile Domains**
+**Multi-Agent Emergent Cognition: Swarm Intelligence for Collective Knowledge Construction**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 
 ## Overview
 
-The Blackhole Archive Project treats a black hole as an **adversarial database** where:
-- Write operations are trivial (throw matter across event horizon)
-- Read operations are forbidden (information causally isolated)
-- Storage is maximally compressed (holographic principle)
-- Time dilation creates asynchronous clocks
+The Blackhole Archive is a **multi-agent simulation framework** exploring how swarm agents collectively build and maintain knowledge structures under adversarial pressure.
 
-The solution: A **multi-colony bio-inspired system** that coordinates to extract information via traversable wormholes:
+The black hole serves as a **conceptual metaphor**: an environment where information is difficult to preserve, resources are scarce, and coordination is challenging. Agents must cooperate to prevent knowledge from being "lost to the void."
 
-- **🦫 Beavers**: Build spacetime scaffolds, stabilize wormhole throats, regulate topology
-- **🐜 Ants**: Construct semantic graphs, maintain indices, achieve distributed consensus
-- **🐝 Bees**: Transport packets, perform waggle dances, synchronize clocks
+### Three Colony Types
 
-## Key Innovation
+- **🦫 Beavers** (Structural Layer): Build infrastructure, reduce traversal costs, manage shared resources
+- **🐜 Ants** (Semantic Layer): Construct knowledge graphs via stigmergy, create vertices and edges through exploration
+- **🐝 Bees** (Transport Layer): Move information packets between graph vertices, scout for high-value targets
 
-This is **not** a metaphor. It's a rigorous framework that:
-1. Solves actual problems in general relativity (wormhole stability)
-2. Provides information-theoretic bounds (holographic principle)
-3. Implements distributed systems under extreme constraints
-4. Integrates with advanced AI (MycoNet 3.0)
+### What This Project Actually Does
 
-Think: **Distributed database where network partitions are enforced by physics.**
+| Component | Implementation |
+|-----------|---------------|
+| **Environment** | Schwarzschild spacetime with geodesic motion (curved space navigation) |
+| **Knowledge Graph** | NetworkX directed graph with creation/pruning/merging lifecycle |
+| **Adversarial Pressure** | 16 threat types (energy drought, noise injection, packet loss, etc.) |
+| **Learning** | Threat memory, social learning, strategy adaptation |
+| **Energy Economics** | Bounded resources, no perpetual motion, realistic constraints |
+
+This is **swarm intelligence research** with physics-inspired environment dynamics.
 
 ## Research Goals
 
@@ -181,102 +181,49 @@ Three specialized colonies with distinct roles:
 - **Algorithm**: Scout → waggle → forager → deliver
 - **Protocol**: Priority-based, bandwidth-limited, error-corrected
 
-### 3. Communication Protocols (`blackhole_archive_protocols.py`)
+### 3. Packet System
 
-Multi-layer protocol stack:
+Bees transport packets between graph vertices:
+- Packets have TTL (time-to-live) and expire if not delivered
+- FIFO queues at each vertex (max 10 packets)
+- Delivery/drop statistics tracked
 
-#### Message Layer
-- **Purpose**: Agent-to-agent communication
-- **Format**: Header (metadata) + Payload (content)
-- **Features**: Causal ordering, authentication, TTL
-- **Types**: Structural updates, graph updates, waggle dances, etc.
+### 4. Adversarial Pressure Layer
 
-#### Packet Layer
-- **Purpose**: Wormhole transport
-- **Format**: Data + Semantic coordinate + Entropy signature + Causal certificate
-- **Features**: 
-  - Error correction (Reed-Solomon)
-  - Holographic bound compliance
-  - Causal ordering preservation
-  - Bandwidth management
+The APL system introduces 16 threat types across categories:
+- **Resource**: Energy drought, material scarcity
+- **Structural**: Erosion, structural decay
+- **Information**: Noise injection, concept drift
+- **Communication**: Congestion, packet loss
 
-#### Channel Layer
-- **Purpose**: Reliable transport
-- **Protocol**: TCP-like with relativistic modifications
-- **Features**:
-  - Congestion control (AIMD)
-  - Priority scheduling
-  - RTT estimation with time dilation
-  - Packet loss recovery
+Pressure budget adapts based on system health.
 
-#### Synchronization Layer
-- **Purpose**: Clock coordination
-- **Algorithm**: Lamport clocks + time dilation correction
-- **Features**:
-  - Vector clocks for causality
-  - Drift estimation
-  - Synchronization intervals
-  - Happened-before relation
+## Technical Details
 
-### 4. Integration with MycoNet (`blackhole_archive_integration.py`)
+### Environment Physics
 
-Two-layer cognitive architecture:
+The simulation uses **Schwarzschild spacetime** as the environment:
+- Metric: `ds² = -(1 - 2M/r)dt² + (1 - 2M/r)⁻¹dr² + r²dΩ²`
+- Geodesic integration via RK4 or symplectic leapfrog
+- Curvature measure: Kretschmann scalar `K = 48M²/r⁶`
 
-**Surface Layer (MycoNet):**
-- Fast, causally accessible
-- Field-theoretic reasoning
-- Distributed agent coordination
-- Capacity: ~10^6 field values
+This provides curved-space navigation, not full GR dynamics.
 
-**Deep Layer (Blackhole Archive):**
-- Massive, causally isolated
-- Holographically compressed
-- Semantic organization
-- Capacity: ~10^12 packets
+### Graph Lifecycle Invariant
 
-**Key Components:**
-- `ArchiveInterface`: Bi-directional translation
-- `MycoNetMemoryLayer`: Memory consolidation/retrieval
-- `PredictiveRetrieval`: Anticipatory prefetching
-- `MemoryConsolidationRL`: Learned archiving policy
-
-**Memory Hierarchy:**
+The system maintains and validates:
 ```
-Level 0: Working Memory      [10 vars]     [immediate]
-Level 1: Short-Term (Fields) [10^6 values] [1-10 steps]
-Level 2: Long-Term (Graph)   [10^9 nodes]  [10-100 steps]
-Level 3: Deep Archive        [10^12 pkts]  [100-1000 steps]
+vertices_created - vertices_pruned - vertices_merged = vertices_alive
 ```
 
-## Mathematical Foundation
+This is tracked via GraphLedger and validated each maintenance cycle.
 
-### Complete Formalization
+### Energy Conservation
 
-See `blackhole_archive_mathematics.tex` for:
-- Lagrangian formulation (GR + colony fields)
-- Field equations (Einstein + agent dynamics)
-- Conservation laws (energy-momentum + information)
-- Stability analysis (wormhole throat + semantic graph)
-- Information-theoretic bounds (holographic + compression)
-
-### Key Results
-
-**Theorem (Generalized Second Law):**
-```
-dS_total/dt ≥ 0
-```
-where `S_total = S_BH + S_semantic + S_transport`
-
-**Theorem (Holographic Bound):**
-```
-I_extract ≤ (c³ A_throat) / (4ℏG) Δt
-```
-
-**Theorem (Causal Order Preservation):**
-Wormhole transport preserves causal ordering:
-```
-e_i ≺ e_j  ⟹  T(e_i) ≺ T(e_j)
-```
+All agent actions have energy costs. The system enforces:
+- No energy creation (bounded total)
+- Realistic resource constraints
+- Material budgets for construction
 
 ## File Structure
 
@@ -449,77 +396,59 @@ viz.plot_energy_evolution()  # Plot agent energy over time
 
 ## Validation
 
-### Physics Validation
+### Environment Validation
 
-1. **Schwarzschild solution**:
-   - Verify metric satisfies Einstein equations
-   - Check limiting cases (flat space, Newtonian)
+1. **Geodesic motion**:
+   - Verify RK4/leapfrog integration accuracy
+   - Check energy conservation along trajectories
 
-2. **Geodesic accuracy**:
-   - Compare with analytical solutions
-   - Verify conservation (energy, angular momentum)
-
-3. **Wormhole stability**:
-   - Check exotic matter conditions
-   - Monitor throat evolution
+2. **Curvature computation**:
+   - Kretschmann scalar K = 48M²/r⁶
+   - Correct behavior near horizon
 
 ### Agent Validation
 
-1. **Beaver scaffolds**:
-   - Verify structural field reduces curvature
-   - Check energy conservation
+1. **Graph lifecycle**:
+   - GraphLedger invariant: created - pruned - merged = alive
+   - No vertex count collapse or explosion
 
-2. **Ant consensus**:
-   - Verify graph convergence
-   - Check pheromone dynamics
+2. **Energy balance**:
+   - Total system energy bounded
+   - No perpetual motion exploits
 
-3. **Bee transport**:
-   - Verify packet delivery
-   - Check latency statistics
-
-### Protocol Validation
-
-1. **Causal ordering**:
-   - Verify happened-before relations
-   - Check vector clock consistency
-
-2. **Holographic bound**:
-   - Verify information rate limits
-   - Check compression ratios
-
-3. **Error correction**:
-   - Test packet corruption recovery
-   - Verify checksum validation
+3. **Packet transport**:
+   - Packets picked up from real queues (not fabricated)
+   - TTL enforcement, delivery/drop tracking
 
 ## Applications
 
-### 1. Distributed Systems Research
+### 1. Swarm Intelligence Research
 
-Test coordination protocols under extreme constraints:
-- Permanent network partitions (event horizon)
-- Unbounded latency (time dilation)
-- Bandwidth limits (area law)
+Multi-agent coordination mechanisms:
+- Stigmergy (pheromone-based communication)
+- Division of labor across colony types
+- Emergent collective behavior
 
-### 2. AI Memory Architectures
+### 2. Knowledge Graph Dynamics
 
-Design hierarchical memory systems:
-- Fast working memory (MycoNet fields)
-- Compressed long-term memory (Archive)
-- Semantic retrieval (Ant graphs)
+Graph lifecycle management:
+- Creation vs pruning vs merging balance
+- Stability under adversarial pressure
+- Optimal forgetting policies
 
-### 3. Information Theory
+### 3. Resilient Distributed Systems
 
-Explore fundamental limits:
-- Holographic entropy bounds
-- Compression with causal constraints
-- Information-theoretic security
+Coordination under adversity:
+- Recovery from perturbations
+- Resource-bounded operation
+- Graceful degradation
 
-### 4. Swarm Robotics
+### 4. Embodied/Bounded AI
 
-Bio-inspired coordination:
-- Stigmergy (ant pheromones)
-- Waggle dance communication
-- Distributed construction
+Energy-constrained cognition:
+- No free computation
+- Resource allocation strategies
+- Survival-driven behavior
 
 ## Future Work
 
@@ -549,27 +478,26 @@ After a successful 10,000 step simulation:
 
 ### Technical Improvements
 
-- [ ] Full numerical relativity (Einstein Toolkit integration)
 - [ ] GPU-accelerated field evolution
 - [ ] Real-time 3D visualization
-- [ ] Adaptive mesh refinement
 - [ ] Machine learning for agent policies
+- [ ] Checkpointing for long simulations
+- [ ] Parameter sweep automation
 
 ### Research Directions
 
 - [ ] **Language grounding**: Map vertices to natural language concepts
 - [ ] **External interaction**: Feed real-world data as environmental stimuli
-- [ ] **Comparative studies**: Benchmark against other cognitive architectures
-- [ ] **Information integration**: Measure Φ (integrated information theory)
+- [ ] **Comparative studies**: Benchmark against other multi-agent frameworks
+- [ ] **Information integration**: Measure emergence metrics (entropy, complexity)
 - [ ] **Perturbation studies**: Targeted attacks, resource scarcity, inter-colony competition
 
 ### Long-Term Vision
 
-- [ ] Hardware implementation (neuromorphic chips)
-- [ ] Experimental validation (analog gravity systems)
-- [ ] Applications to cosmology (universe as information archive)
-- [ ] Connection to black hole information paradox
-- [ ] Practical distributed database implementation
+- [ ] Neuromorphic hardware implementation
+- [ ] Application to real swarm robotics
+- [ ] Integration with LLM-based agents
+- [ ] Practical distributed knowledge systems
 
 ## Contributing
 
@@ -615,4 +543,4 @@ For questions, discussions, or collaborations:
 
 ---
 
-**"Treating causally hostile domains as distributed systems problems since 2025."**
+**"Exploring emergent cognition through multi-agent swarm simulations."**
