@@ -2020,8 +2020,12 @@ class SemanticGraph:
         ADDITIONAL CRITERIA: Also require salience similarity (within 0.3) to merge.
         This prevents merging semantically distinct vertices that happen to be near.
 
+        OPTIMIZED: Uses scipy KD-tree for O(V log V) instead of O(V²) neighbor search.
+
         Note: Uses SPATIAL distance only (r, theta, phi), not time component.
         """
+        from scipy.spatial import cKDTree
+
         merged_count = 0
         vertices = list(self.graph.nodes())
 
@@ -2029,74 +2033,95 @@ class SemanticGraph:
         if self.graph.number_of_nodes() <= self.MIN_STABLE_VERTICES:
             return 0
 
-        for i, v1 in enumerate(vertices):
-            # Stop if we've merged down to minimum
-            if self.graph.number_of_nodes() <= self.MIN_STABLE_VERTICES:
+        # Build position and salience arrays
+        valid_vertices = []
+        positions = []
+        saliences = []
+
+        for v in vertices:
+            if v not in self.graph:
+                continue
+            if 'position' not in self.graph.nodes[v]:
+                continue
+            pos = self.graph.nodes[v]['position']
+            if len(pos) < 4:
+                continue
+            valid_vertices.append(v)
+            positions.append(pos[1:4])  # Spatial only (r, theta, phi)
+            saliences.append(self.graph.nodes[v].get('salience', 0.5))
+
+        if len(valid_vertices) < 2:
+            return 0
+
+        # Build KD-tree for fast neighbor queries
+        positions_array = np.array(positions)
+        tree = cKDTree(positions_array)
+
+        # Find all pairs within threshold
+        pairs = tree.query_pairs(r=distance_threshold)
+
+        # Track which vertices to merge (avoid double-merging)
+        merged_into = {}  # v2 -> v1 (v2 merged into v1)
+
+        for i, j in pairs:
+            v1, v2 = valid_vertices[i], valid_vertices[j]
+
+            # Skip if either already merged
+            if v1 in merged_into or v2 in merged_into:
+                continue
+
+            # Check salience similarity
+            sal1, sal2 = saliences[i], saliences[j]
+            if abs(sal1 - sal2) >= 0.3:
+                continue
+
+            # Stop if at minimum
+            if self.graph.number_of_nodes() - len(merged_into) <= self.MIN_STABLE_VERTICES:
                 break
 
-            if v1 not in self.graph:
+            # Mark v2 to be merged into v1
+            merged_into[v2] = v1
+
+        # Perform the merges
+        for v2, v1 in merged_into.items():
+            if v1 not in self.graph or v2 not in self.graph:
                 continue
-            if 'position' not in self.graph.nodes[v1]:
-                continue
-            pos1 = self.graph.nodes[v1]['position']
+
+            # Keep the more salient vertex's properties
             sal1 = self.graph.nodes[v1].get('salience', 0.5)
+            sal2 = self.graph.nodes[v2].get('salience', 0.5)
+            if sal2 > sal1:
+                self.graph.nodes[v1]['salience'] = sal2
+                self.graph.nodes[v1]['position'] = self.graph.nodes[v2]['position']
 
-            for v2 in vertices[i+1:]:
-                if v2 not in self.graph:
-                    continue
-                if 'position' not in self.graph.nodes[v2]:
-                    continue
-                pos2 = self.graph.nodes[v2]['position']
-                sal2 = self.graph.nodes[v2].get('salience', 0.5)
+            # Transfer packets
+            if v2 in self.packet_queues:
+                for pkt in self.packet_queues[v2]:
+                    self.add_packet(v1, pkt)
+                del self.packet_queues[v2]
 
-                # Check SPATIAL distance only (exclude time component at index 0)
-                try:
-                    spatial_dist = np.linalg.norm(pos1[1:] - pos2[1:])
-                except (TypeError, ValueError):
-                    continue
+            # Transfer edges
+            for pred in list(self.graph.predecessors(v2)):
+                if pred != v1 and pred in self.graph:
+                    self.add_edge(pred, v1, 0.5)
+            for succ in list(self.graph.successors(v2)):
+                if succ != v1 and succ in self.graph:
+                    self.add_edge(v1, succ, 0.5)
 
-                # REQUIRE BOTH: close position AND similar salience
-                salience_diff = abs(sal1 - sal2)
-                if spatial_dist < distance_threshold and salience_diff < 0.3:
-                    # CRITICAL: Check minimum before each merge
-                    if self.graph.number_of_nodes() <= self.MIN_STABLE_VERTICES:
-                        return merged_count
+            # Remove merged vertex
+            if v2 in self.graph:
+                self.graph.remove_node(v2)
+                self.ledger['merged_total'] += 1
+                merged_count += 1
 
-                    # Merge v2 into v1 - keep the more salient vertex
-                    if sal2 > sal1:
-                        self.graph.nodes[v1]['salience'] = sal2
-                        self.graph.nodes[v1]['position'] = pos2
-
-                    # Transfer packets
-                    if v2 in self.packet_queues:
-                        for pkt in self.packet_queues[v2]:
-                            self.add_packet(v1, pkt)
-                        del self.packet_queues[v2]
-
-                    # Transfer edges
-                    for pred in list(self.graph.predecessors(v2)):
-                        if pred != v1 and pred in self.graph:
-                            self.add_edge(pred, v1, 0.5)
-                    for succ in list(self.graph.successors(v2)):
-                        if succ != v1 and succ in self.graph:
-                            self.add_edge(v1, succ, 0.5)
-
-                    # Remove merged vertex (NOT a prune - it's a merge!)
-                    # FIX: Merges should NOT increment pruned_total - they're distinct operations
-                    if v2 in self.graph:
-                        self.graph.remove_node(v2)
-                        self.ledger['merged_total'] += 1
-                        # DON'T increment pruned_total for merges - that was double-counting!
-                    # Clean up other tracking structures
-                    if v2 in self.vertex_activations:
-                        del self.vertex_activations[v2]
-                    if v2 in self.vertex_creation_times:
-                        del self.vertex_creation_times[v2]
-                    if v2 in self.vertex_access_counts:
-                        del self.vertex_access_counts[v2]
-                    self.stable_vertex_set.discard(v2)
-
-                    merged_count += 1
+            # Clean up other tracking structures
+            if v2 in self.vertex_activations:
+                del self.vertex_activations[v2]
+            if v2 in self.vertex_creation_times:
+                del self.vertex_creation_times[v2]
+            if v2 in self.vertex_access_counts:
+                del self.vertex_access_counts[v2]
+            self.stable_vertex_set.discard(v2)
 
         return merged_count
 
@@ -3228,8 +3253,8 @@ def run_with_visualization():
                 engine.semantic_graph.prune_graph(t)
                 engine.semantic_graph.merge_nearby_vertices()
 
-            # Update visualization every 10 steps
-            if step % 10 == 0:
+            # Update visualization every 50 steps (less overhead)
+            if step % 50 == 0:
                 viz.update(step, t)
 
     except KeyboardInterrupt:
