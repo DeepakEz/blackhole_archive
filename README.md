@@ -120,6 +120,7 @@ The enhanced simulation (`blackhole_archive_enhanced.py`) includes critical fixe
 | **Energy Balance** | Proper energy conservation across all colony types |
 | **Vectorized Geodesics** | numpy einsum acceleration (3-5x faster) |
 | **Live Visualization** | Real-time agent positions, graph, and metrics |
+| **Checkpointing** | Auto-saves every 500 steps, crash recovery support |
 
 **Runtime Estimates:**
 - Quick test (`SIM_FAST=1`, 1000 steps): ~20 minutes
@@ -133,6 +134,22 @@ Run with `VIS=1` to see real-time:
 - **Knowledge graph** with salience-colored vertices
 - **Energy & vertex count** over time
 - **Live metrics** panel with colony status
+
+### Crash Recovery
+
+The simulation automatically saves checkpoints every 500 steps. If the simulation crashes:
+
+1. Checkpoints are saved to `./enhanced_results/checkpoints/`
+2. An emergency checkpoint is saved on crash
+3. Resume with:
+
+```python
+from blackhole_archive_enhanced import EnhancedSimulationEngine
+
+# Load from checkpoint and resume
+engine = EnhancedSimulationEngine.load_checkpoint("enhanced_results/checkpoints/checkpoint_step_002500.json")
+engine.run()  # Continues from step 2500
+```
 
 ### Expected Output
 
