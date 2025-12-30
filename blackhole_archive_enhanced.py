@@ -1294,35 +1294,19 @@ class EnhancedAntAgent(Agent):
         self.contribution_score = 0.0  # Running counterfactual contribution
 
     def _find_nearby_vertex(self, semantic_graph, distance_threshold: float = 2.0):
-        """Find the closest existing vertex within distance threshold."""
-        closest_vertex = None
-        closest_distance = float('inf')
+        """Find the closest existing vertex within distance threshold.
 
-        for v in semantic_graph.graph.nodes():
-            node_data = semantic_graph.graph.nodes.get(v, {})
-            if 'position' not in node_data:
-                continue
-            pos = node_data['position']
-            # Use spatial distance (ignore time component)
-            dist = np.linalg.norm(self.position[1:] - pos[1:])
-            if dist < distance_threshold and dist < closest_distance:
-                closest_distance = dist
-                closest_vertex = v
-
-        return closest_vertex
+        OPTIMIZED: Uses KD-tree spatial index for O(log V) instead of O(V).
+        """
+        # Use semantic graph's spatial index
+        return semantic_graph.find_nearest_vertex(self.position, distance_threshold)
 
     def _find_all_nearby_vertices(self, semantic_graph, distance_threshold: float = 3.0):
-        """Find all existing vertices within distance threshold."""
-        nearby = []
-        for v in semantic_graph.graph.nodes():
-            node_data = semantic_graph.graph.nodes.get(v, {})
-            if 'position' not in node_data:
-                continue
-            pos = node_data['position']
-            dist = np.linalg.norm(self.position[1:] - pos[1:])
-            if dist < distance_threshold:
-                nearby.append(v)
-        return nearby
+        """Find all existing vertices within distance threshold.
+
+        OPTIMIZED: Uses KD-tree spatial index for O(log V + k) instead of O(V).
+        """
+        return semantic_graph.find_vertices_in_radius(self.position, distance_threshold)
 
     def update(self, dt: float, spacetime: EnhancedSpacetime, semantic_graph, current_time: float = 0.0):
         # ZOMBIE FIX: Check energy first, prevent actions with negative energy
@@ -1845,6 +1829,11 @@ class SemanticGraph:
         self.creation_time = 0.0  # When the graph was initialized
         self.is_bootstrapped = False  # Whether bootstrap phase is complete
 
+        # PERFORMANCE: Spatial index for O(log V) nearest neighbor queries
+        self._spatial_index = None  # KD-tree, rebuilt periodically
+        self._spatial_vertex_ids = []  # Mapping from index to vertex ID
+        self._spatial_index_dirty = True  # Needs rebuild
+
         # Vertex stability tracking
         self.vertex_creation_times = {}  # vertex_id -> creation_time
         self.vertex_access_counts = {}  # vertex_id -> access count for stability scoring
@@ -1886,6 +1875,69 @@ class SemanticGraph:
             return False
         return True
 
+    def rebuild_spatial_index(self):
+        """Rebuild KD-tree spatial index for O(log V) nearest neighbor queries.
+
+        Call this periodically (e.g., every 50 steps) to keep index fresh.
+        Much faster than O(V) linear scan for each ant update.
+        """
+        from scipy.spatial import cKDTree
+
+        if self.graph.number_of_nodes() == 0:
+            self._spatial_index = None
+            self._spatial_vertex_ids = []
+            self._spatial_index_dirty = False
+            return
+
+        positions = []
+        vertex_ids = []
+
+        for v in self.graph.nodes():
+            node_data = self.graph.nodes.get(v, {})
+            if 'position' in node_data:
+                # Use spatial coordinates (ignore time component)
+                pos = node_data['position']
+                positions.append(pos[1:4] if len(pos) >= 4 else pos[:3])
+                vertex_ids.append(v)
+
+        if positions:
+            self._spatial_index = cKDTree(np.array(positions))
+            self._spatial_vertex_ids = vertex_ids
+        else:
+            self._spatial_index = None
+            self._spatial_vertex_ids = []
+
+        self._spatial_index_dirty = False
+
+    def find_nearest_vertex(self, position: np.ndarray, distance_threshold: float = 2.0):
+        """Find nearest vertex using spatial index. O(log V) instead of O(V)."""
+        if self._spatial_index is None or self._spatial_index_dirty:
+            self.rebuild_spatial_index()
+
+        if self._spatial_index is None or len(self._spatial_vertex_ids) == 0:
+            return None
+
+        # Query using spatial coordinates
+        query_pos = position[1:4] if len(position) >= 4 else position[:3]
+        dist, idx = self._spatial_index.query(query_pos, k=1)
+
+        if dist <= distance_threshold:
+            return self._spatial_vertex_ids[idx]
+        return None
+
+    def find_vertices_in_radius(self, position: np.ndarray, radius: float = 3.0):
+        """Find all vertices within radius using spatial index. O(log V + k)."""
+        if self._spatial_index is None or self._spatial_index_dirty:
+            self.rebuild_spatial_index()
+
+        if self._spatial_index is None or len(self._spatial_vertex_ids) == 0:
+            return []
+
+        query_pos = position[1:4] if len(position) >= 4 else position[:3]
+        indices = self._spatial_index.query_ball_point(query_pos, radius)
+
+        return [self._spatial_vertex_ids[i] for i in indices]
+
     def add_vertex(self, position: np.ndarray, salience: float, current_time: float = 0.0) -> int:
         """Add vertex to graph with max vertex limit and stability tracking"""
         # Enforce maximum vertices
@@ -1925,6 +1977,9 @@ class SemanticGraph:
         self.vertex_creation_times[vertex_id] = current_time
         self.vertex_access_counts[vertex_id] = 0
 
+        # PERFORMANCE: Mark spatial index as needing rebuild
+        self._spatial_index_dirty = True
+
         self.ledger['created_total'] += 1
         return vertex_id
 
@@ -1932,6 +1987,9 @@ class SemanticGraph:
         """Internal method to cleanly remove a vertex with ledger tracking"""
         if vertex_id in self.graph:
             self.graph.remove_node(vertex_id)
+
+            # PERFORMANCE: Mark spatial index as needing rebuild
+            self._spatial_index_dirty = True
 
             # Track reason in ledger
             if reason == 'replaced':
