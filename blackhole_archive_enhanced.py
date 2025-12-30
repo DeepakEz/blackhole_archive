@@ -2585,6 +2585,178 @@ class EnhancedSimulationEngine:
         
         return agents
 
+    def save_checkpoint(self, step: int, checkpoint_dir: str = None):
+        """Save simulation state for crash recovery.
+
+        Checkpoints are saved as JSON files containing:
+        - Current step number
+        - Agent states (positions, velocities, energy, counters)
+        - Semantic graph (vertices, edges, properties)
+        - Statistics and history (truncated to save space)
+        """
+        import json
+
+        if checkpoint_dir is None:
+            checkpoint_dir = Path(self.config.output_dir) / "checkpoints"
+        else:
+            checkpoint_dir = Path(checkpoint_dir)
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+        checkpoint = {
+            'step': step,
+            'timestamp': str(np.datetime64('now')),
+            'config': {
+                'black_hole_mass': self.config.black_hole_mass,
+                'n_beavers': self.config.n_beavers,
+                'n_ants': self.config.n_ants,
+                'n_bees': self.config.n_bees,
+                't_max': self.config.t_max,
+                'dt': self.config.dt,
+            },
+            'agents': {},
+            'semantic_graph': {
+                'vertices': [],
+                'edges': [],
+                'ledger': self.semantic_graph.ledger.copy()
+            },
+            'stats': {
+                'total_energy': self.stats.get('total_energy', 0),
+                'n_structures_built': self.stats.get('n_structures_built', 0),
+                'n_vertices': self.stats.get('n_vertices', 0),
+                'n_packets_transported': self.stats.get('n_packets_transported', 0),
+                # Keep only last 100 history entries
+                'energy_history': self.stats.get('energy_history', [])[-100:],
+                'vertices_history': self.stats.get('vertices_history', [])[-100:],
+            },
+            'material_budget': EnhancedBeaverAgent.global_material_budget
+        }
+
+        # Save agent states
+        for colony_name, agents_list in self.agents.items():
+            checkpoint['agents'][colony_name] = []
+            for agent in agents_list:
+                agent_state = {
+                    'id': agent.id,
+                    'position': agent.position.tolist(),
+                    'velocity': agent.velocity.tolist(),
+                    'energy': agent.energy,
+                    'state': agent.state,
+                }
+                # Colony-specific attributes
+                if colony_name == 'beavers':
+                    agent_state['structures_built'] = agent.structures_built
+                elif colony_name == 'ants':
+                    agent_state['vertices_created'] = agent.vertices_created
+                    agent_state['edges_created'] = agent.edges_created
+                    agent_state['packets_generated'] = agent.packets_generated
+                elif colony_name == 'bees':
+                    agent_state['packets_delivered'] = agent.packets_delivered
+                    agent_state['packets_dropped'] = agent.packets_dropped
+                checkpoint['agents'][colony_name].append(agent_state)
+
+        # Save semantic graph vertices
+        for v in self.semantic_graph.graph.nodes():
+            vdata = self.semantic_graph.graph.nodes[v]
+            checkpoint['semantic_graph']['vertices'].append({
+                'id': v,
+                'position': vdata['position'].tolist() if 'position' in vdata else [0,0,0,0],
+                'salience': vdata.get('salience', 0.5),
+                'created_at': vdata.get('created_at', 0),
+            })
+
+        # Save semantic graph edges (just connectivity)
+        for u, v in self.semantic_graph.graph.edges():
+            checkpoint['semantic_graph']['edges'].append({'source': u, 'target': v})
+
+        # Write checkpoint
+        checkpoint_path = checkpoint_dir / f"checkpoint_step_{step:06d}.json"
+        with open(checkpoint_path, 'w') as f:
+            json.dump(checkpoint, f, indent=2)
+
+        # Keep only last 3 checkpoints to save disk space
+        checkpoints = sorted(checkpoint_dir.glob("checkpoint_step_*.json"))
+        for old_ckpt in checkpoints[:-3]:
+            old_ckpt.unlink()
+
+        self.logger.info(f"Checkpoint saved: {checkpoint_path}")
+        return checkpoint_path
+
+    @classmethod
+    def load_checkpoint(cls, checkpoint_path: str, config=None):
+        """Load simulation from checkpoint and resume.
+
+        Usage:
+            engine = EnhancedSimulationEngine.load_checkpoint("checkpoint_step_002300.json")
+            engine.run(resume_from_step=2300)
+        """
+        import json
+        from blackhole_archive_main import SimulationConfig
+
+        with open(checkpoint_path, 'r') as f:
+            checkpoint = json.load(f)
+
+        # Create config from checkpoint if not provided
+        if config is None:
+            ckpt_config = checkpoint['config']
+            config = SimulationConfig(
+                black_hole_mass=ckpt_config['black_hole_mass'],
+                n_beavers=ckpt_config['n_beavers'],
+                n_ants=ckpt_config['n_ants'],
+                n_bees=ckpt_config['n_bees'],
+                t_max=ckpt_config['t_max'],
+                dt=ckpt_config['dt'],
+            )
+
+        # Create engine
+        engine = cls(config)
+
+        # Restore agent states
+        for colony_name, agents_data in checkpoint['agents'].items():
+            for i, agent_state in enumerate(agents_data):
+                if i < len(engine.agents[colony_name]):
+                    agent = engine.agents[colony_name][i]
+                    agent.position = np.array(agent_state['position'])
+                    agent.velocity = np.array(agent_state['velocity'])
+                    agent.energy = agent_state['energy']
+                    agent.state = agent_state['state']
+
+                    if colony_name == 'beavers':
+                        agent.structures_built = agent_state.get('structures_built', 0)
+                    elif colony_name == 'ants':
+                        agent.vertices_created = agent_state.get('vertices_created', 0)
+                        agent.edges_created = agent_state.get('edges_created', 0)
+                        agent.packets_generated = agent_state.get('packets_generated', 0)
+                    elif colony_name == 'bees':
+                        agent.packets_delivered = agent_state.get('packets_delivered', 0)
+                        agent.packets_dropped = agent_state.get('packets_dropped', 0)
+
+        # Restore semantic graph
+        engine.semantic_graph.graph.clear()
+        for vdata in checkpoint['semantic_graph']['vertices']:
+            engine.semantic_graph.graph.add_node(
+                vdata['id'],
+                position=np.array(vdata['position']),
+                salience=vdata['salience'],
+                created_at=vdata['created_at'],
+                packet_queue=[]
+            )
+        for edata in checkpoint['semantic_graph']['edges']:
+            engine.semantic_graph.graph.add_edge(edata['source'], edata['target'], pheromone=0.5)
+
+        # Restore ledger
+        engine.semantic_graph.ledger = checkpoint['semantic_graph']['ledger']
+
+        # Restore stats
+        engine.stats.update(checkpoint['stats'])
+
+        # Restore material budget
+        EnhancedBeaverAgent.global_material_budget = checkpoint['material_budget']
+
+        engine._checkpoint_step = checkpoint['step']
+        engine.logger.info(f"Loaded checkpoint from step {checkpoint['step']}")
+
+        return engine
+
     def _seed_semantic_graph(self, n_initial_vertices: int = 10):
         """
         FIX #3: Seed semantic graph with initial high-salience vertices.
@@ -2635,360 +2807,389 @@ class EnhancedSimulationEngine:
 
         self.logger.info(f"Semantic graph seeded with {self.semantic_graph.graph.number_of_nodes()} vertices")
 
-    def run(self):
-        """Run enhanced simulation"""
+    def run(self, resume_from_step: int = 0, checkpoint_interval: int = 500):
+        """Run enhanced simulation with checkpointing and error recovery.
+
+        Args:
+            resume_from_step: Start from this step (used when resuming from checkpoint)
+            checkpoint_interval: Save checkpoint every N steps (default 500)
+        """
         n_steps = int(self.config.t_max / self.config.dt)
-        self.logger.info(f"Starting enhanced simulation: {n_steps} steps")
+        start_step = resume_from_step if resume_from_step > 0 else getattr(self, '_checkpoint_step', 0)
 
-        # FIX #5: Reset material budget at simulation start
-        EnhancedBeaverAgent.global_material_budget = 500.0
+        if start_step > 0:
+            self.logger.info(f"Resuming simulation from step {start_step}/{n_steps}")
+        else:
+            self.logger.info(f"Starting enhanced simulation: {n_steps} steps")
+            # FIX #5: Reset material budget at simulation start (only if fresh start)
+            EnhancedBeaverAgent.global_material_budget = 500.0
 
-        for step in tqdm(range(n_steps), desc="Enhanced Simulation"):
-            t = step * self.config.dt
+        try:
+            for step in tqdm(range(start_step, n_steps), desc="Enhanced Simulation", initial=start_step, total=n_steps):
+                t = step * self.config.dt
 
-            # Update all agents
-            for beaver in self.agents['beavers']:
-                if beaver.state == "active":
-                    beaver.update(self.config.dt, self.spacetime, self.semantic_graph)
+                # CHECKPOINT: Save every checkpoint_interval steps
+                if step > 0 and step % checkpoint_interval == 0:
+                    self.save_checkpoint(step)
 
-            for ant in self.agents['ants']:
-                if ant.state == "active":
-                    ant.update(self.config.dt, self.spacetime, self.semantic_graph, current_time=t)
+                # Update all agents
+                for beaver in self.agents['beavers']:
+                    if beaver.state == "active":
+                        beaver.update(self.config.dt, self.spacetime, self.semantic_graph)
 
-            for bee in self.agents['bees']:
-                if bee.state == "active":
-                    bee.update(self.config.dt, self.spacetime, self.semantic_graph,
-                               self.wormhole_position, current_time=t)
+                for ant in self.agents['ants']:
+                    if ant.state == "active":
+                        ant.update(self.config.dt, self.spacetime, self.semantic_graph, current_time=t)
 
-            # FIX #5: Decay structural field (maintenance cost)
-            self.spacetime.decay_structural_field(self.config.dt)
+                for bee in self.agents['bees']:
+                    if bee.state == "active":
+                        bee.update(self.config.dt, self.spacetime, self.semantic_graph,
+                                   self.wormhole_position, current_time=t)
 
-            # FIX #7: Decay epistemic stress
-            self.spacetime.decay_epistemic_stress(self.config.dt)
+                # FIX #5: Decay structural field (maintenance cost)
+                self.spacetime.decay_structural_field(self.config.dt)
 
-            # FIX #7: Add epistemic stress at congested vertices
-            for v in self.semantic_graph.graph.nodes():
-                queue_len = self.semantic_graph.get_queue_length(v)
-                if queue_len > 5:  # Congestion threshold
-                    pos = self.semantic_graph.graph.nodes[v]['position']
-                    stress = 0.1 * (queue_len - 5)  # Stress proportional to congestion
-                    self.spacetime.add_epistemic_stress(pos, stress)
+                # FIX #7: Decay epistemic stress
+                self.spacetime.decay_epistemic_stress(self.config.dt)
 
-            # Decay pheromones
-            self.semantic_graph.decay_pheromones(self.config.dt)
+                # FIX #7: Add epistemic stress at congested vertices
+                for v in self.semantic_graph.graph.nodes():
+                    queue_len = self.semantic_graph.get_queue_length(v)
+                    if queue_len > 5:  # Congestion threshold
+                        pos = self.semantic_graph.graph.nodes[v]['position']
+                        stress = 0.1 * (queue_len - 5)  # Stress proportional to congestion
+                        self.spacetime.add_epistemic_stress(pos, stress)
 
-            # DYNAMIC SPACETIME: Update stress-energy from agents and evolve metric
-            for agents_list in self.agents.values():
-                for agent in agents_list:
-                    if agent.state == "active":
-                        # Each active agent contributes to stress-energy
-                        self.spacetime.add_stress_energy(agent.position, agent.energy * 0.01)
+                # Decay pheromones
+                self.semantic_graph.decay_pheromones(self.config.dt)
 
-            # Evolve metric perturbation (linearized Einstein equations)
-            self.spacetime.evolve_metric(self.config.dt)
+                # DYNAMIC SPACETIME: Update stress-energy from agents and evolve metric
+                for agents_list in self.agents.values():
+                    for agent in agents_list:
+                        if agent.state == "active":
+                            # Each active agent contributes to stress-energy
+                            self.spacetime.add_stress_energy(agent.position, agent.energy * 0.01)
 
-            # BEKENSTEIN BOUND: Add entropy from packet queues
-            for v in self.semantic_graph.graph.nodes():
-                queue_len = self.semantic_graph.get_queue_length(v)
-                if queue_len > 0:
-                    pos = self.semantic_graph.graph.nodes[v]['position']
-                    # Each packet represents some bits of information
-                    bits = queue_len * 64  # Assume 64 bits per packet header
-                    thermalized = self.spacetime.add_local_entropy(pos, bits * 0.01)
-                    # If bits were thermalized, corrupt/drop packets
-                    if thermalized > 0:
-                        packets_to_drop = int(thermalized / 64)
-                        for _ in range(min(packets_to_drop, queue_len)):
-                            self.semantic_graph.get_packet(v)  # Drop packet
+                # Evolve metric perturbation (linearized Einstein equations)
+                self.spacetime.evolve_metric(self.config.dt)
 
-            # Decay entropy (Hawking radiation analog)
-            self.spacetime.decay_entropy(self.config.dt)
+                # BEKENSTEIN BOUND: Add entropy from packet queues
+                for v in self.semantic_graph.graph.nodes():
+                    queue_len = self.semantic_graph.get_queue_length(v)
+                    if queue_len > 0:
+                        pos = self.semantic_graph.graph.nodes[v]['position']
+                        # Each packet represents some bits of information
+                        bits = queue_len * 64  # Assume 64 bits per packet header
+                        thermalized = self.spacetime.add_local_entropy(pos, bits * 0.01)
+                        # If bits were thermalized, corrupt/drop packets
+                        if thermalized > 0:
+                            packets_to_drop = int(thermalized / 64)
+                            for _ in range(min(packets_to_drop, queue_len)):
+                                self.semantic_graph.get_packet(v)  # Drop packet
 
-            # FIX #6: Periodically prune and merge graph
-            # A/B TEST CONTROLS: Set env vars to disable for debugging
-            import os
-            enable_prune = not os.environ.get('DISABLE_PRUNE')
-            enable_merge = not os.environ.get('DISABLE_MERGE')
+                # Decay entropy (Hawking radiation analog)
+                self.spacetime.decay_entropy(self.config.dt)
 
-            if step % 50 == 0 and step > 0:
-                pruned = 0
-                merged = 0
-                if enable_prune:
-                    pruned = self.semantic_graph.prune_graph(t)
-                if enable_merge:
-                    merged = self.semantic_graph.merge_nearby_vertices()
-                if pruned > 0 or merged > 0:
-                    self.logger.debug(f"Graph maintenance: pruned={pruned}, merged={merged}")
+                # FIX #6: Periodically prune and merge graph
+                # A/B TEST CONTROLS: Set env vars to disable for debugging
+                import os
+                enable_prune = not os.environ.get('DISABLE_PRUNE')
+                enable_merge = not os.environ.get('DISABLE_MERGE')
 
-            # =================================================================
-            # ISSUE 3: OVERMIND META-LEVEL CONTROL
-            # =================================================================
-            if self.overmind_active and step % 10 == 0:
-                # Get current colony metrics
-                n_vertices = self.semantic_graph.graph.number_of_nodes()
-                n_edges = self.semantic_graph.graph.number_of_edges()
-                n_structures = sum(b.structures_built for b in self.agents['beavers'])
-                n_packets = sum(b.packets_delivered for b in self.agents['bees'])
+                if step % 50 == 0 and step > 0:
+                    pruned = 0
+                    merged = 0
+                    if enable_prune:
+                        pruned = self.semantic_graph.prune_graph(t)
+                    if enable_merge:
+                        merged = self.semantic_graph.merge_nearby_vertices()
+                    if pruned > 0 or merged > 0:
+                        self.logger.debug(f"Graph maintenance: pruned={pruned}, merged={merged}")
 
-                # Create wrapper for Overmind to observe
-                # (Overmind expects EpistemicSemanticGraph, but we can pass data directly)
-                total_energy = sum(a.energy for agents in self.agents.values()
-                                   for a in agents if a.state == "active")
+                # =================================================================
+                # ISSUE 3: OVERMIND META-LEVEL CONTROL
+                # =================================================================
+                if self.overmind_active and step % 10 == 0:
+                    # Get current colony metrics
+                    n_vertices = self.semantic_graph.graph.number_of_nodes()
+                    n_edges = self.semantic_graph.graph.number_of_edges()
+                    n_structures = sum(b.structures_built for b in self.agents['beavers'])
+                    n_packets = sum(b.packets_delivered for b in self.agents['bees'])
 
-                # Detect imbalance: structures >> vertices or vertices >> packets
-                structure_vertex_ratio = (n_structures + 1) / (n_vertices + 1)
-                vertex_packet_ratio = (n_vertices + 1) / (n_packets + 1)
+                    # Create wrapper for Overmind to observe
+                    # (Overmind expects EpistemicSemanticGraph, but we can pass data directly)
+                    total_energy = sum(a.energy for agents in self.agents.values()
+                                       for a in agents if a.state == "active")
 
-                # COLONY BALANCING LOGIC
-                # If structures >> vertices: boost ant exploration
-                if structure_vertex_ratio > 10:
-                    # Ants need to explore more - give them energy bonus
-                    exploration_bonus = 0.01 * (structure_vertex_ratio - 10)
-                    for ant in self.agents['ants']:
-                        if ant.state == "active":
-                            ant.energy = min(1.5, ant.energy + exploration_bonus)
+                    # Detect imbalance: structures >> vertices or vertices >> packets
+                    structure_vertex_ratio = (n_structures + 1) / (n_vertices + 1)
+                    vertex_packet_ratio = (n_vertices + 1) / (n_packets + 1)
 
-                # If vertices >> packets: boost bee transport
-                if vertex_packet_ratio > 5:
-                    # Bees need to transport more - give them energy bonus
-                    transport_bonus = 0.005 * (vertex_packet_ratio - 5)
-                    for bee in self.agents['bees']:
-                        if bee.state == "active":
-                            bee.energy = min(1.5, bee.energy + transport_bonus)
-
-                # If too many contradictions/stagnation: inject exploration noise
-                if hasattr(self.semantic_graph, 'stable_vertex_set'):
-                    stability_rate = len(self.semantic_graph.stable_vertex_set) / (n_vertices + 1)
-                    if stability_rate > 0.9 and step > 200:
-                        # System is stagnating - inject exploration
+                    # COLONY BALANCING LOGIC
+                    # If structures >> vertices: boost ant exploration
+                    if structure_vertex_ratio > 10:
+                        # Ants need to explore more - give them energy bonus
+                        exploration_bonus = 0.01 * (structure_vertex_ratio - 10)
                         for ant in self.agents['ants']:
                             if ant.state == "active":
-                                # Add random velocity perturbation
-                                ant.velocity += 0.02 * np.random.randn(4)
+                                ant.energy = min(1.5, ant.energy + exploration_bonus)
 
-                # Log Overmind state periodically
-                if step % 100 == 0:
-                    self.logger.debug(
-                        f"Overmind: S/V ratio={structure_vertex_ratio:.2f}, "
-                        f"V/P ratio={vertex_packet_ratio:.2f}"
-                    )
+                    # If vertices >> packets: boost bee transport
+                    if vertex_packet_ratio > 5:
+                        # Bees need to transport more - give them energy bonus
+                        transport_bonus = 0.005 * (vertex_packet_ratio - 5)
+                        for bee in self.agents['bees']:
+                            if bee.state == "active":
+                                bee.energy = min(1.5, bee.energy + transport_bonus)
 
-            # =================================================================
-            # PHASE II: ADVERSARIAL PRESSURE LAYER
-            # =================================================================
-            if self.apl_active and step % 5 == 0:
-                # Compute system state for APL
-                n_alive = sum(1 for agents_list in self.agents.values()
-                             for a in agents_list if a.state == "active")
-                n_total = sum(len(agents_list) for agents_list in self.agents.values())
-                survival_rate = n_alive / max(1, n_total)
+                    # If too many contradictions/stagnation: inject exploration noise
+                    if hasattr(self.semantic_graph, 'stable_vertex_set'):
+                        stability_rate = len(self.semantic_graph.stable_vertex_set) / (n_vertices + 1)
+                        if stability_rate > 0.9 and step > 200:
+                            # System is stagnating - inject exploration
+                            for ant in self.agents['ants']:
+                                if ant.state == "active":
+                                    # Add random velocity perturbation
+                                    ant.velocity += 0.02 * np.random.randn(4)
 
-                total_energy = sum(a.energy for agents_list in self.agents.values()
-                                   for a in agents_list if a.state == "active")
-
-                # Energy trend (positive = gaining energy)
-                if self.last_energy is not None:
-                    energy_trend = (total_energy - self.last_energy) / self.config.dt
-                else:
-                    energy_trend = 0.0
-
-                # Build work efficiency
-                n_structures = sum(b.structures_built for b in self.agents['beavers'])
-                n_packets = sum(b.packets_delivered for b in self.agents['bees'])
-                work_per_agent = (n_structures + n_packets) / max(1, n_alive)
-
-                # Graph health
-                n_vertices = self.semantic_graph.graph.number_of_nodes()
-                n_edges = self.semantic_graph.graph.number_of_edges()
-                graph_health = min(1.0, n_vertices / 100.0)  # Healthy if 100+ vertices
-
-                system_state = {
-                    'survival_rate': survival_rate,
-                    'energy_trend': energy_trend,
-                    'work_efficiency': work_per_agent * 10,
-                    'behavioral_entropy': 0.5,  # TODO: compute from action distribution
-                    'graph_health': graph_health,
-                    'packet_backlog': self.semantic_graph.get_total_queue_length(),
-                    'energy_ratio': total_energy / max(1, n_total),
-                    'build_rate': n_structures / max(1, t),
-                    'total_energy': total_energy,
-                    'n_vertices': n_vertices,
-                    'n_edges': n_edges,
-                    'n_packets': n_packets,
-                    'work_per_agent': work_per_agent
-                }
-
-                # Update APL
-                apl_result = self.apl.update(
-                    current_time=t,
-                    dt=self.config.dt * 5,  # APL runs every 5 steps
-                    spacetime=self.spacetime,
-                    semantic_graph=self.semantic_graph,
-                    agents=self.agents,
-                    system_state=system_state
-                )
-
-                # Record APL stats
-                if step % 50 == 0:
-                    self.apl_stats['pressure_history'].append(apl_result['pressure_budget'])
-                    self.apl_stats['threat_history'].append(len(apl_result['active_effects']))
-                    self.apl_stats['damage_history'].append(apl_result['damage_report'])
-
-                # Log APL events
-                if apl_result['triggered_events']:
-                    self.logger.info(
-                        f"APL triggered: {', '.join(apl_result['triggered_events'])} "
-                        f"(budget={apl_result['pressure_budget']:.1f}, "
-                        f"threat={apl_result['threat_level']:.3f})"
-                    )
-
-            # =================================================================
-            # AGENT PLASTICITY SYSTEM - Learning from experience
-            # =================================================================
-            if self.plasticity_active:
-                # Collect all agents for social learning
-                all_agents = [a for agents_list in self.agents.values() for a in agents_list]
-
-                for colony_name, agents_list in self.agents.items():
-                    for agent in agents_list:
-                        # Handle dead agents
-                        if agent.state == "dead" and agent.id in self.plasticity.agent_states:
-                            # Determine death cause from current conditions
-                            death_cause = "unknown"
-                            if agent.energy <= 0:
-                                death_cause = "energy_depletion"
-                            if hasattr(agent, 'position') and agent.position[1] < 3.0:
-                                death_cause = "horizon_crossing"
-
-                            conditions = {
-                                'energy': agent.energy,
-                                'r': agent.position[1] if hasattr(agent, 'position') else 0,
-                                'colony': colony_name
-                            }
-                            self.plasticity.on_agent_death(agent, death_cause, conditions, t)
-
-                        # Update plasticity for active agents and apply modifiers
-                        elif agent.state == "active":
-                            modifiers = self.plasticity.update_agent(agent, all_agents, self.config.dt)
-
-                            # Apply threat avoidance to velocity
-                            avoidance = modifiers.get('avoidance_vector', np.zeros(3))
-                            if np.linalg.norm(avoidance) > 0.01:
-                                # Blend avoidance into velocity
-                                danger_avoidance = modifiers.get('danger_avoidance', 0)
-                                agent.velocity[1:4] += 0.1 * danger_avoidance * avoidance
-
-                            # Record success when energy/contribution increases
-                            if hasattr(agent, 'contribution_score'):
-                                reward = getattr(agent, '_last_contribution', 0)
-                                current = agent.contribution_score
-                                if current > reward:
-                                    self.plasticity.on_agent_success(agent, current - reward)
-                                agent._last_contribution = current
-
-                # System-wide plasticity update (memory decay)
-                if step % 10 == 0:
-                    self.plasticity.update_system(self.config.dt * 10)
-
-                # Log plasticity metrics periodically
-                if step % 200 == 0:
-                    metrics = self.plasticity.get_metrics()
-                    if metrics['deaths_recorded'] > 0:
-                        self.logger.info(
-                            f"Plasticity: deaths={metrics['deaths_recorded']}, "
-                            f"danger_zones={metrics['danger_zones']}, "
-                            f"social_learning={metrics['social_learning_events']}"
+                    # Log Overmind state periodically
+                    if step % 100 == 0:
+                        self.logger.debug(
+                            f"Overmind: S/V ratio={structure_vertex_ratio:.2f}, "
+                            f"V/P ratio={vertex_packet_ratio:.2f}"
                         )
 
-            # Update statistics
-            self.stats['total_energy'] = sum(
-                a.energy for agents in self.agents.values() for a in agents if a.state == "active"
-            )
-            self.stats['n_structures_built'] = sum(
-                b.structures_built for b in self.agents['beavers']
-            )
-            self.stats['n_packets_transported'] = sum(
-                b.packets_delivered for b in self.agents['bees']
-            )
-            self.stats['n_packets_dropped'] = sum(
-                b.packets_dropped for b in self.agents['bees']
-            )
-            self.stats['n_packets_generated'] = sum(
-                a.packets_generated for a in self.agents['ants']
-            )
-            self.stats['queue_length'] = self.semantic_graph.get_total_queue_length()
-            self.stats['material_remaining'] = EnhancedBeaverAgent.global_material_budget
-            self.stats['n_vertices'] = self.semantic_graph.graph.number_of_nodes()
-            self.stats['n_edges'] = self.semantic_graph.graph.number_of_edges()
+                # =================================================================
+                # PHASE II: ADVERSARIAL PRESSURE LAYER
+                # =================================================================
+                if self.apl_active and step % 5 == 0:
+                    # Compute system state for APL
+                    n_alive = sum(1 for agents_list in self.agents.values()
+                                 for a in agents_list if a.state == "active")
+                    n_total = sum(len(agents_list) for agents_list in self.agents.values())
+                    survival_rate = n_alive / max(1, n_total)
 
-            # ISSUE 2: Individual contribution tracking
-            self.stats['ant_contributions'] = {
-                ant.id: {
-                    'vertices_created': ant.vertices_created,
-                    'edges_created': ant.edges_created,
-                    'info_discovered': ant.total_info_discovered,
-                    'contribution_score': ant.contribution_score
-                }
-                for ant in self.agents['ants']
-            }
-            # Summary: vertices per ant (productivity metric)
-            active_ants = [a for a in self.agents['ants'] if a.state == "active"]
-            total_ant_vertices = sum(a.vertices_created for a in self.agents['ants'])
-            self.stats['vertices_per_ant'] = total_ant_vertices / max(1, len(active_ants))
+                    total_energy = sum(a.energy for agents_list in self.agents.values()
+                                       for a in agents_list if a.state == "active")
 
-            # VALIDATION: Thermodynamic metrics
-            thermo_stats = self.spacetime.get_thermodynamic_stats()
-            self.stats['bekenstein_thermalization_events'] = thermo_stats['bekenstein_thermalization_events']
-            self.stats['thermodynamic_heat'] = thermo_stats['thermodynamic_heat']
-            self.stats['total_entropy'] = thermo_stats['total_entropy']
-            self.stats['mean_metric_perturbation'] = thermo_stats['mean_metric_perturbation']
+                    # Energy trend (positive = gaining energy)
+                    if self.last_energy is not None:
+                        energy_trend = (total_energy - self.last_energy) / self.config.dt
+                    else:
+                        energy_trend = 0.0
 
-            # PLASTICITY metrics
-            if self.plasticity_active:
-                plasticity_metrics = self.plasticity.get_metrics()
-                self.stats['plasticity_deaths'] = plasticity_metrics['deaths_recorded']
-                self.stats['plasticity_danger_zones'] = plasticity_metrics['danger_zones']
-                self.stats['plasticity_social_learning'] = plasticity_metrics['social_learning_events']
-                self.stats['plasticity_adaptations'] = plasticity_metrics['strategies_adapted']
+                    # Build work efficiency
+                    n_structures = sum(b.structures_built for b in self.agents['beavers'])
+                    n_packets = sum(b.packets_delivered for b in self.agents['bees'])
+                    work_per_agent = (n_structures + n_packets) / max(1, n_alive)
 
-            # Simple stability check: energy should not decay too fast
-            current_energy = self.stats['total_energy']
-            is_stable = True
-            if self.last_energy is not None:
-                energy_decay_rate = (self.last_energy - current_energy) / self.config.dt
-                # Unstable if energy decays more than 5% per unit time
-                if energy_decay_rate > 0.05 * self.last_energy:
-                    is_stable = False
-                    self.consecutive_violations += 1
-                else:
-                    self.consecutive_violations = 0
-            self.last_energy = current_energy
-            self.stability_history.append(is_stable)
+                    # Graph health
+                    n_vertices = self.semantic_graph.graph.number_of_nodes()
+                    n_edges = self.semantic_graph.graph.number_of_edges()
+                    graph_health = min(1.0, n_vertices / 100.0)  # Healthy if 100+ vertices
 
-            # Record history
-            if step % 10 == 0:
-                self.stats['energy_history'].append(self.stats['total_energy'])
-                self.stats['vertices_history'].append(self.stats['n_vertices'])
-                self.stats['structures_history'].append(self.stats['n_structures_built'])
-                stable_count = sum(1 for s in self.stability_history if s)
-                self.stats['stability_rate'].append(stable_count / max(1, len(self.stability_history)))
+                    system_state = {
+                        'survival_rate': survival_rate,
+                        'energy_trend': energy_trend,
+                        'work_efficiency': work_per_agent * 10,
+                        'behavioral_entropy': 0.5,  # TODO: compute from action distribution
+                        'graph_health': graph_health,
+                        'packet_backlog': self.semantic_graph.get_total_queue_length(),
+                        'energy_ratio': total_energy / max(1, n_total),
+                        'build_rate': n_structures / max(1, t),
+                        'total_energy': total_energy,
+                        'n_vertices': n_vertices,
+                        'n_edges': n_edges,
+                        'n_packets': n_packets,
+                        'work_per_agent': work_per_agent
+                    }
 
-                # Snapshot ledger for debugging
-                self.semantic_graph.snapshot_ledger(step)
+                    # Update APL
+                    apl_result = self.apl.update(
+                        current_time=t,
+                        dt=self.config.dt * 5,  # APL runs every 5 steps
+                        spacetime=self.spacetime,
+                        semantic_graph=self.semantic_graph,
+                        agents=self.agents,
+                        system_state=system_state
+                    )
 
-            # Log
-            if step % 100 == 0:
-                self.logger.info(
-                    f"Step {step}/{n_steps}, t={t:.2f}, "
-                    f"Energy={self.stats['total_energy']:.2f}, "
-                    f"Vertices={self.stats['n_vertices']}, "
-                    f"V/Ant={self.stats['vertices_per_ant']:.2f}, "
-                    f"Structures={self.stats['n_structures_built']}, "
-                    f"Packets={self.stats['n_packets_transported']}, "
-                    f"Queue={self.stats['queue_length']}, "
-                    f"Materials={self.stats['material_remaining']:.0f}"
+                    # Record APL stats
+                    if step % 50 == 0:
+                        self.apl_stats['pressure_history'].append(apl_result['pressure_budget'])
+                        self.apl_stats['threat_history'].append(len(apl_result['active_effects']))
+                        self.apl_stats['damage_history'].append(apl_result['damage_report'])
+
+                    # Log APL events
+                    if apl_result['triggered_events']:
+                        self.logger.info(
+                            f"APL triggered: {', '.join(apl_result['triggered_events'])} "
+                            f"(budget={apl_result['pressure_budget']:.1f}, "
+                            f"threat={apl_result['threat_level']:.3f})"
+                        )
+
+                # =================================================================
+                # AGENT PLASTICITY SYSTEM - Learning from experience
+                # =================================================================
+                if self.plasticity_active:
+                    # Collect all agents for social learning
+                    all_agents = [a for agents_list in self.agents.values() for a in agents_list]
+
+                    for colony_name, agents_list in self.agents.items():
+                        for agent in agents_list:
+                            # Handle dead agents
+                            if agent.state == "dead" and agent.id in self.plasticity.agent_states:
+                                # Determine death cause from current conditions
+                                death_cause = "unknown"
+                                if agent.energy <= 0:
+                                    death_cause = "energy_depletion"
+                                if hasattr(agent, 'position') and agent.position[1] < 3.0:
+                                    death_cause = "horizon_crossing"
+
+                                conditions = {
+                                    'energy': agent.energy,
+                                    'r': agent.position[1] if hasattr(agent, 'position') else 0,
+                                    'colony': colony_name
+                                }
+                                self.plasticity.on_agent_death(agent, death_cause, conditions, t)
+
+                            # Update plasticity for active agents and apply modifiers
+                            elif agent.state == "active":
+                                modifiers = self.plasticity.update_agent(agent, all_agents, self.config.dt)
+
+                                # Apply threat avoidance to velocity
+                                avoidance = modifiers.get('avoidance_vector', np.zeros(3))
+                                if np.linalg.norm(avoidance) > 0.01:
+                                    # Blend avoidance into velocity
+                                    danger_avoidance = modifiers.get('danger_avoidance', 0)
+                                    agent.velocity[1:4] += 0.1 * danger_avoidance * avoidance
+
+                                # Record success when energy/contribution increases
+                                if hasattr(agent, 'contribution_score'):
+                                    reward = getattr(agent, '_last_contribution', 0)
+                                    current = agent.contribution_score
+                                    if current > reward:
+                                        self.plasticity.on_agent_success(agent, current - reward)
+                                    agent._last_contribution = current
+
+                    # System-wide plasticity update (memory decay)
+                    if step % 10 == 0:
+                        self.plasticity.update_system(self.config.dt * 10)
+
+                    # Log plasticity metrics periodically
+                    if step % 200 == 0:
+                        metrics = self.plasticity.get_metrics()
+                        if metrics['deaths_recorded'] > 0:
+                            self.logger.info(
+                                f"Plasticity: deaths={metrics['deaths_recorded']}, "
+                                f"danger_zones={metrics['danger_zones']}, "
+                                f"social_learning={metrics['social_learning_events']}"
+                            )
+
+                # Update statistics
+                self.stats['total_energy'] = sum(
+                    a.energy for agents in self.agents.values() for a in agents if a.state == "active"
                 )
-        
+                self.stats['n_structures_built'] = sum(
+                    b.structures_built for b in self.agents['beavers']
+                )
+                self.stats['n_packets_transported'] = sum(
+                    b.packets_delivered for b in self.agents['bees']
+                )
+                self.stats['n_packets_dropped'] = sum(
+                    b.packets_dropped for b in self.agents['bees']
+                )
+                self.stats['n_packets_generated'] = sum(
+                    a.packets_generated for a in self.agents['ants']
+                )
+                self.stats['queue_length'] = self.semantic_graph.get_total_queue_length()
+                self.stats['material_remaining'] = EnhancedBeaverAgent.global_material_budget
+                self.stats['n_vertices'] = self.semantic_graph.graph.number_of_nodes()
+                self.stats['n_edges'] = self.semantic_graph.graph.number_of_edges()
+
+                # ISSUE 2: Individual contribution tracking
+                self.stats['ant_contributions'] = {
+                    ant.id: {
+                        'vertices_created': ant.vertices_created,
+                        'edges_created': ant.edges_created,
+                        'info_discovered': ant.total_info_discovered,
+                        'contribution_score': ant.contribution_score
+                    }
+                    for ant in self.agents['ants']
+                }
+                # Summary: vertices per ant (productivity metric)
+                active_ants = [a for a in self.agents['ants'] if a.state == "active"]
+                total_ant_vertices = sum(a.vertices_created for a in self.agents['ants'])
+                self.stats['vertices_per_ant'] = total_ant_vertices / max(1, len(active_ants))
+
+                # VALIDATION: Thermodynamic metrics
+                thermo_stats = self.spacetime.get_thermodynamic_stats()
+                self.stats['bekenstein_thermalization_events'] = thermo_stats['bekenstein_thermalization_events']
+                self.stats['thermodynamic_heat'] = thermo_stats['thermodynamic_heat']
+                self.stats['total_entropy'] = thermo_stats['total_entropy']
+                self.stats['mean_metric_perturbation'] = thermo_stats['mean_metric_perturbation']
+
+                # PLASTICITY metrics
+                if self.plasticity_active:
+                    plasticity_metrics = self.plasticity.get_metrics()
+                    self.stats['plasticity_deaths'] = plasticity_metrics['deaths_recorded']
+                    self.stats['plasticity_danger_zones'] = plasticity_metrics['danger_zones']
+                    self.stats['plasticity_social_learning'] = plasticity_metrics['social_learning_events']
+                    self.stats['plasticity_adaptations'] = plasticity_metrics['strategies_adapted']
+
+                # Simple stability check: energy should not decay too fast
+                current_energy = self.stats['total_energy']
+                is_stable = True
+                if self.last_energy is not None:
+                    energy_decay_rate = (self.last_energy - current_energy) / self.config.dt
+                    # Unstable if energy decays more than 5% per unit time
+                    if energy_decay_rate > 0.05 * self.last_energy:
+                        is_stable = False
+                        self.consecutive_violations += 1
+                    else:
+                        self.consecutive_violations = 0
+                self.last_energy = current_energy
+                self.stability_history.append(is_stable)
+
+                # Record history
+                if step % 10 == 0:
+                    self.stats['energy_history'].append(self.stats['total_energy'])
+                    self.stats['vertices_history'].append(self.stats['n_vertices'])
+                    self.stats['structures_history'].append(self.stats['n_structures_built'])
+                    stable_count = sum(1 for s in self.stability_history if s)
+                    self.stats['stability_rate'].append(stable_count / max(1, len(self.stability_history)))
+
+                    # Snapshot ledger for debugging
+                    self.semantic_graph.snapshot_ledger(step)
+
+                # Log
+                if step % 100 == 0:
+                    self.logger.info(
+                        f"Step {step}/{n_steps}, t={t:.2f}, "
+                        f"Energy={self.stats['total_energy']:.2f}, "
+                        f"Vertices={self.stats['n_vertices']}, "
+                        f"V/Ant={self.stats['vertices_per_ant']:.2f}, "
+                        f"Structures={self.stats['n_structures_built']}, "
+                        f"Packets={self.stats['n_packets_transported']}, "
+                        f"Queue={self.stats['queue_length']}, "
+                        f"Materials={self.stats['material_remaining']:.0f}"
+                    )
+
+        except KeyboardInterrupt:
+            self.logger.warning(f"Simulation interrupted at step {step}. Saving emergency checkpoint...")
+            self.save_checkpoint(step)
+            raise
+
+        except Exception as e:
+            self.logger.error(f"Simulation crashed at step {step}: {e}")
+            self.logger.warning("Saving emergency checkpoint...")
+            try:
+                self.save_checkpoint(step)
+                self.logger.info(f"Emergency checkpoint saved. Resume with: load_checkpoint('checkpoint_step_{step:06d}.json')")
+            except Exception as save_error:
+                self.logger.error(f"Failed to save emergency checkpoint: {save_error}")
+            raise
+
         self.logger.info("Enhanced simulation complete")
 
         # GRAPH LEDGER DUMP - Critical for debugging vertex collapse
