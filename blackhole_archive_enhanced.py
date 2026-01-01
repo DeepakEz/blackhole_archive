@@ -592,8 +592,12 @@ class GraphGovernor:
         return adjustments
 
     def get_merge_threshold(self, base_threshold: float = 0.05) -> float:
-        """Get adjusted merge distance threshold."""
-        return base_threshold / self.policies['merge_aggressiveness']
+        """Get adjusted merge distance threshold.
+
+        FIX: Was inverted (/ instead of *). Higher aggressiveness should mean
+        LARGER threshold = MORE vertices qualify for merge, not fewer.
+        """
+        return base_threshold * self.policies['merge_aggressiveness']
 
     def should_prune(self, base_probability: float = 1.0) -> bool:
         """Should we prune this cycle?"""
