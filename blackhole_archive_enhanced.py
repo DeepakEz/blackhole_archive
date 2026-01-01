@@ -110,6 +110,500 @@ INFO_DENSITY_THRESHOLD = 0.5  # 50% of maximum information density
 P_SPONTANEOUS_ACTION = 0.01  # exp(-4.6) ≈ 0.01, activation energy ~ 0.46
 
 # =============================================================================
+# RESEARCH-GRADE METRICS & DIAGNOSTICS
+# =============================================================================
+
+class GraphHealthDashboard:
+    """
+    Scientific metrics for graph health analysis.
+
+    Tracks structural properties that distinguish "bigger graph" from
+    "useful knowledge structure". Outputs to JSON/CSV for analysis.
+    """
+
+    def __init__(self, output_dir: str = "./enhanced_results"):
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        self.history = []
+        self.current_step = 0
+
+    def compute_metrics(self, graph: nx.DiGraph, agents: dict, step: int) -> dict:
+        """Compute comprehensive graph health metrics."""
+        self.current_step = step
+        n_nodes = graph.number_of_nodes()
+        n_edges = graph.number_of_edges()
+
+        if n_nodes == 0:
+            return self._empty_metrics(step)
+
+        metrics = {
+            'step': step,
+            'timestamp': str(np.datetime64('now')),
+
+            # === STRUCTURAL METRICS ===
+            'n_vertices': n_nodes,
+            'n_edges': n_edges,
+            'density': n_edges / (n_nodes * (n_nodes - 1) + 1e-10),
+
+            # Giant component: fragmentation detector
+            'giant_component_size': self._giant_component_size(graph),
+            'giant_component_pct': self._giant_component_size(graph) / max(1, n_nodes),
+            'n_components': nx.number_weakly_connected_components(graph),
+
+            # Navigability: can agents find what they need?
+            'avg_shortest_path': self._avg_shortest_path(graph),
+            'diameter': self._graph_diameter(graph),
+
+            # Clustering: redundant reinforcement
+            'avg_clustering': nx.average_clustering(graph.to_undirected()) if n_nodes > 1 else 0,
+
+            # Hub structure: power-law or balanced?
+            'max_in_degree': max(dict(graph.in_degree()).values()) if n_nodes > 0 else 0,
+            'max_out_degree': max(dict(graph.out_degree()).values()) if n_nodes > 0 else 0,
+            'degree_assortativity': self._safe_assortativity(graph),
+
+            # === SALIENCE METRICS ===
+            'mean_salience': np.mean([graph.nodes[v].get('salience', 0) for v in graph.nodes()]),
+            'salience_std': np.std([graph.nodes[v].get('salience', 0) for v in graph.nodes()]),
+            'salience_gini': self._gini_coefficient([graph.nodes[v].get('salience', 0) for v in graph.nodes()]),
+
+            # === DYNAMICS METRICS ===
+            'edge_churn_rate': self._compute_edge_churn(),
+
+            # === QUEUE METRICS (congestion) ===
+            'total_queue_backlog': 0,  # Will be filled by caller
+            'max_queue_length': 0,
+
+            # === PER-COLONY CONTRIBUTION ===
+            'beaver_structures': sum(a.structures_built for a in agents.get('beavers', [])),
+            'ant_vertices_created': sum(a.vertices_created for a in agents.get('ants', [])),
+            'ant_edges_created': sum(a.edges_created for a in agents.get('ants', [])),
+            'bee_packets_delivered': sum(a.packets_delivered for a in agents.get('bees', [])),
+            'bee_packets_dropped': sum(a.packets_dropped for a in agents.get('bees', [])),
+
+            # Colony survival
+            'beavers_alive': sum(1 for a in agents.get('beavers', []) if a.state == 'active'),
+            'ants_alive': sum(1 for a in agents.get('ants', []) if a.state == 'active'),
+            'bees_alive': sum(1 for a in agents.get('bees', []) if a.state == 'active'),
+        }
+
+        self.history.append(metrics)
+        return metrics
+
+    def _empty_metrics(self, step: int) -> dict:
+        """Return metrics for empty graph."""
+        return {
+            'step': step, 'n_vertices': 0, 'n_edges': 0, 'density': 0,
+            'giant_component_size': 0, 'giant_component_pct': 0, 'n_components': 0,
+            'avg_shortest_path': 0, 'diameter': 0, 'avg_clustering': 0,
+            'max_in_degree': 0, 'max_out_degree': 0, 'degree_assortativity': 0,
+            'mean_salience': 0, 'salience_std': 0, 'salience_gini': 0,
+            'edge_churn_rate': 0, 'total_queue_backlog': 0, 'max_queue_length': 0,
+            'beaver_structures': 0, 'ant_vertices_created': 0, 'ant_edges_created': 0,
+            'bee_packets_delivered': 0, 'bee_packets_dropped': 0,
+            'beavers_alive': 0, 'ants_alive': 0, 'bees_alive': 0,
+        }
+
+    def _giant_component_size(self, graph: nx.DiGraph) -> int:
+        """Size of largest weakly connected component."""
+        if graph.number_of_nodes() == 0:
+            return 0
+        components = list(nx.weakly_connected_components(graph))
+        return max(len(c) for c in components) if components else 0
+
+    def _avg_shortest_path(self, graph: nx.DiGraph) -> float:
+        """Average shortest path in giant component (navigability)."""
+        if graph.number_of_nodes() < 2:
+            return 0
+
+        # Use largest connected component
+        largest_cc = max(nx.weakly_connected_components(graph), key=len)
+        if len(largest_cc) < 2:
+            return 0
+
+        subgraph = graph.subgraph(largest_cc)
+        try:
+            return nx.average_shortest_path_length(subgraph)
+        except nx.NetworkXError:
+            return 0
+
+    def _graph_diameter(self, graph: nx.DiGraph) -> int:
+        """Diameter of giant component."""
+        if graph.number_of_nodes() < 2:
+            return 0
+
+        largest_cc = max(nx.weakly_connected_components(graph), key=len)
+        if len(largest_cc) < 2:
+            return 0
+
+        subgraph = graph.subgraph(largest_cc)
+        try:
+            return nx.diameter(subgraph.to_undirected())
+        except nx.NetworkXError:
+            return 0
+
+    def _safe_assortativity(self, graph: nx.DiGraph) -> float:
+        """Degree assortativity (hubs connected to hubs?)."""
+        try:
+            return nx.degree_assortativity_coefficient(graph)
+        except (nx.NetworkXError, ZeroDivisionError):
+            return 0
+
+    def _gini_coefficient(self, values: list) -> float:
+        """Gini coefficient for inequality (0=equal, 1=one has all)."""
+        if not values or len(values) < 2:
+            return 0
+        values = np.array(sorted(values))
+        n = len(values)
+        if values.sum() == 0:
+            return 0
+        index = np.arange(1, n + 1)
+        return (2 * np.sum(index * values) - (n + 1) * np.sum(values)) / (n * np.sum(values))
+
+    def _compute_edge_churn(self) -> float:
+        """Edge churn rate (stability vs thrashing)."""
+        if len(self.history) < 2:
+            return 0
+        prev_edges = self.history[-2].get('n_edges', 0) if len(self.history) > 1 else 0
+        curr_edges = self.history[-1].get('n_edges', 0) if self.history else 0
+        return abs(curr_edges - prev_edges) / max(1, prev_edges)
+
+    def save_history(self, filename: str = "graph_health_metrics.json"):
+        """Save metrics history to JSON."""
+        path = self.output_dir / filename
+        with open(path, 'w') as f:
+            json.dump(self.history, f, indent=2, default=float)
+        return path
+
+    def save_csv(self, filename: str = "graph_health_metrics.csv"):
+        """Save metrics history to CSV for analysis."""
+        import csv
+        path = self.output_dir / filename
+        if not self.history:
+            return path
+
+        with open(path, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=self.history[0].keys())
+            writer.writeheader()
+            writer.writerows(self.history)
+        return path
+
+    def diagnose_collapse(self, current_v: int, previous_v: int, graph: nx.DiGraph) -> dict:
+        """Auto-diagnose when graph collapses (V drops sharply)."""
+        if previous_v == 0 or current_v >= previous_v * 0.7:
+            return None  # No collapse
+
+        diagnosis = {
+            'collapse_detected': True,
+            'vertex_drop_pct': (previous_v - current_v) / previous_v,
+            'current_vertices': current_v,
+            'previous_vertices': previous_v,
+            'components_after': nx.number_weakly_connected_components(graph),
+            'giant_component_pct': self._giant_component_size(graph) / max(1, current_v),
+            'recent_history': self.history[-10:] if len(self.history) >= 10 else self.history,
+        }
+
+        # Analyze salience distribution
+        saliences = [graph.nodes[v].get('salience', 0) for v in graph.nodes()]
+        if saliences:
+            diagnosis['salience_mean'] = np.mean(saliences)
+            diagnosis['salience_min'] = min(saliences)
+            diagnosis['salience_max'] = max(saliences)
+
+        return diagnosis
+
+
+class EventLedger:
+    """
+    Discrete event logging for debugging and replay.
+
+    Tracks all significant events with causality info for post-mortem analysis.
+    """
+
+    def __init__(self, output_dir: str = "./enhanced_results"):
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.events = []
+        self.event_counts = {}
+
+    def log(self, event_type: str, step: int, details: dict = None):
+        """Log a discrete event."""
+        event = {
+            'type': event_type,
+            'step': step,
+            'timestamp': str(np.datetime64('now')),
+            'details': details or {}
+        }
+        self.events.append(event)
+
+        # Track counts
+        self.event_counts[event_type] = self.event_counts.get(event_type, 0) + 1
+
+    def log_vertex_created(self, step: int, vertex_id: int, position: np.ndarray,
+                           salience: float, creator_id: str):
+        self.log('vertex_created', step, {
+            'vertex_id': vertex_id,
+            'position': position.tolist() if hasattr(position, 'tolist') else position,
+            'salience': salience,
+            'creator': creator_id
+        })
+
+    def log_vertex_pruned(self, step: int, vertex_id: int, reason: str,
+                          age: float = 0, access_count: int = 0):
+        self.log('vertex_pruned', step, {
+            'vertex_id': vertex_id,
+            'reason': reason,
+            'age': age,
+            'access_count': access_count
+        })
+
+    def log_vertex_merged(self, step: int, source_id: int, target_id: int,
+                          distance: float, salience_diff: float):
+        self.log('vertex_merged', step, {
+            'source': source_id,
+            'target': target_id,
+            'distance': distance,
+            'salience_diff': salience_diff
+        })
+
+    def log_agent_death(self, step: int, agent_id: str, cause: str,
+                        energy: float, position: np.ndarray):
+        self.log('agent_death', step, {
+            'agent_id': agent_id,
+            'cause': cause,
+            'energy': energy,
+            'position': position.tolist() if hasattr(position, 'tolist') else position
+        })
+
+    def log_backlog_spike(self, step: int, total_backlog: int, max_queue: int):
+        self.log('backlog_spike', step, {
+            'total_backlog': total_backlog,
+            'max_queue': max_queue
+        })
+
+    def log_fragmentation(self, step: int, n_components: int, giant_pct: float):
+        self.log('fragmentation', step, {
+            'n_components': n_components,
+            'giant_component_pct': giant_pct
+        })
+
+    def log_apl_trigger(self, step: int, threat_type: str, damage: float):
+        self.log('apl_trigger', step, {
+            'threat_type': threat_type,
+            'damage': damage
+        })
+
+    def get_summary(self) -> dict:
+        """Get event count summary."""
+        return {
+            'total_events': len(self.events),
+            'event_counts': self.event_counts.copy(),
+            'first_event': self.events[0] if self.events else None,
+            'last_event': self.events[-1] if self.events else None,
+        }
+
+    def save(self, filename: str = "event_ledger.json"):
+        """Save event ledger to JSON."""
+        path = self.output_dir / filename
+        with open(path, 'w') as f:
+            json.dump({
+                'summary': self.get_summary(),
+                'events': self.events[-10000:]  # Keep last 10k events
+            }, f, indent=2, default=float)
+        return path
+
+    def filter_events(self, event_type: str) -> list:
+        """Get all events of a specific type."""
+        return [e for e in self.events if e['type'] == event_type]
+
+
+class KnowledgeUtilityScorer:
+    """
+    Measures actual utility of knowledge graph beyond just size.
+
+    Utility = (retrieval_success × freshness × coherence) - cost
+
+    Runs periodic "query tasks" where agents navigate to goal concepts.
+    """
+
+    def __init__(self):
+        self.query_results = []
+        self.utility_history = []
+
+    def run_query_task(self, graph: nx.DiGraph, agents: dict, step: int) -> dict:
+        """
+        Run a knowledge retrieval task to measure utility.
+
+        Randomly samples a goal vertex and measures:
+        - Can any agent reach it?
+        - How many hops?
+        - Energy cost to reach?
+        """
+        if graph.number_of_nodes() < 5:
+            return {'step': step, 'utility': 0, 'reason': 'graph_too_small'}
+
+        # Sample a random goal vertex (prefer high-salience)
+        vertices = list(graph.nodes())
+        saliences = [graph.nodes[v].get('salience', 0.5) for v in vertices]
+        # Weighted sampling by salience
+        weights = np.array(saliences) / sum(saliences) if sum(saliences) > 0 else None
+        goal_vertex = np.random.choice(vertices, p=weights)
+
+        # Find shortest paths from all vertices to goal
+        try:
+            paths = nx.single_target_shortest_path_length(graph, goal_vertex)
+            reachable_count = len(paths)
+            avg_path_length = np.mean(list(paths.values())) if paths else float('inf')
+        except nx.NetworkXError:
+            reachable_count = 0
+            avg_path_length = float('inf')
+
+        # Freshness: how recently was goal accessed?
+        goal_data = graph.nodes.get(goal_vertex, {})
+        freshness = 1.0 / (1.0 + step - goal_data.get('last_accessed', 0))
+
+        # Coherence: does goal have meaningful connections?
+        in_degree = graph.in_degree(goal_vertex)
+        out_degree = graph.out_degree(goal_vertex)
+        coherence = min(1.0, (in_degree + out_degree) / 10.0)
+
+        # Retrieval success
+        retrieval_success = reachable_count / len(vertices)
+
+        # Cost (inverse of efficiency)
+        cost = avg_path_length / 10.0 if avg_path_length < float('inf') else 1.0
+
+        # Final utility
+        utility = (retrieval_success * freshness * coherence) - cost
+
+        result = {
+            'step': step,
+            'goal_vertex': goal_vertex,
+            'goal_salience': goal_data.get('salience', 0),
+            'retrieval_success': retrieval_success,
+            'freshness': freshness,
+            'coherence': coherence,
+            'avg_path_length': avg_path_length if avg_path_length < float('inf') else -1,
+            'cost': cost,
+            'utility': utility
+        }
+
+        self.query_results.append(result)
+        self.utility_history.append(utility)
+
+        return result
+
+    def get_average_utility(self, window: int = 10) -> float:
+        """Get rolling average utility."""
+        if not self.utility_history:
+            return 0
+        return np.mean(self.utility_history[-window:])
+
+    def save(self, output_dir: str = "./enhanced_results"):
+        """Save utility results."""
+        path = Path(output_dir) / "knowledge_utility.json"
+        with open(path, 'w') as f:
+            json.dump({
+                'average_utility': self.get_average_utility(),
+                'query_results': self.query_results
+            }, f, indent=2, default=float)
+        return path
+
+
+class GraphGovernor:
+    """
+    Self-regulating graph governance system.
+
+    Dynamically adjusts merge/prune policies based on graph health metrics.
+    Replaces fixed schedules with adaptive control.
+    """
+
+    def __init__(self):
+        self.policies = {
+            'merge_aggressiveness': 1.0,  # 1.0 = normal, >1 = more aggressive
+            'prune_aggressiveness': 1.0,
+            'bridge_priority': 1.0,       # Priority for creating bridging edges
+            'hub_dampening': 1.0,         # Reduce concentration in hubs
+        }
+
+        self.target_metrics = {
+            'vertex_growth_rate': 0.1,    # Target 10% growth per period
+            'fragmentation_max': 0.3,     # Max 30% fragmentation
+            'queue_backlog_max': 100,     # Max total queue backlog
+            'salience_gini_max': 0.5,     # Max inequality in salience
+        }
+
+        self.adjustment_history = []
+
+    def update_policies(self, metrics: dict, step: int) -> dict:
+        """
+        Adjust governance policies based on current graph health.
+
+        Returns policy adjustments made.
+        """
+        adjustments = {}
+
+        # 1. If V grows too fast → increase merge aggressiveness
+        if len(self.adjustment_history) > 0:
+            prev_v = self.adjustment_history[-1].get('n_vertices', 0)
+            curr_v = metrics.get('n_vertices', 0)
+            growth_rate = (curr_v - prev_v) / max(1, prev_v)
+
+            if growth_rate > self.target_metrics['vertex_growth_rate'] * 2:
+                self.policies['merge_aggressiveness'] = min(2.0, self.policies['merge_aggressiveness'] * 1.1)
+                adjustments['merge_aggressiveness'] = 'increased (fast growth)'
+            elif growth_rate < 0:  # Shrinking
+                self.policies['merge_aggressiveness'] = max(0.5, self.policies['merge_aggressiveness'] * 0.9)
+                adjustments['merge_aggressiveness'] = 'decreased (shrinking)'
+
+        # 2. If fragmentation increases → reduce pruning + boost bridging
+        giant_pct = metrics.get('giant_component_pct', 1.0)
+        if giant_pct < 1.0 - self.target_metrics['fragmentation_max']:
+            self.policies['prune_aggressiveness'] = max(0.5, self.policies['prune_aggressiveness'] * 0.9)
+            self.policies['bridge_priority'] = min(2.0, self.policies['bridge_priority'] * 1.1)
+            adjustments['fragmentation'] = 'detected - reduced pruning, boosted bridging'
+
+        # 3. If queue backlog rises → boost transport priority (affects bees)
+        backlog = metrics.get('total_queue_backlog', 0)
+        if backlog > self.target_metrics['queue_backlog_max']:
+            adjustments['backlog_alert'] = f'high backlog: {backlog}'
+
+        # 4. If salience too concentrated → dampen hub dominance
+        salience_gini = metrics.get('salience_gini', 0)
+        if salience_gini > self.target_metrics['salience_gini_max']:
+            self.policies['hub_dampening'] = min(2.0, self.policies['hub_dampening'] * 1.1)
+            adjustments['hub_dampening'] = 'increased (concentration detected)'
+
+        # Record for history
+        record = {
+            'step': step,
+            'policies': self.policies.copy(),
+            'adjustments': adjustments,
+            'metrics_snapshot': {
+                'n_vertices': metrics.get('n_vertices', 0),
+                'giant_component_pct': giant_pct,
+                'salience_gini': salience_gini,
+            }
+        }
+        self.adjustment_history.append(record)
+
+        return adjustments
+
+    def get_merge_threshold(self, base_threshold: float = 0.05) -> float:
+        """Get adjusted merge distance threshold."""
+        return base_threshold / self.policies['merge_aggressiveness']
+
+    def should_prune(self, base_probability: float = 1.0) -> bool:
+        """Should we prune this cycle?"""
+        return np.random.random() < base_probability * self.policies['prune_aggressiveness']
+
+    def get_bridge_bonus(self) -> float:
+        """Bonus probability for creating bridging edges."""
+        return 0.1 * self.policies['bridge_priority']
+
+
+# =============================================================================
 # ENHANCED PHYSICS
 # =============================================================================
 
@@ -2649,6 +3143,18 @@ class EnhancedSimulationEngine:
             self.plasticity_active = False
             self.logger.warning("Plasticity not available - agent_plasticity.py not found")
 
+        # RESEARCH-GRADE: Initialize scientific analysis components
+        self.logger.info("Initializing research-grade components...")
+        self.health_dashboard = GraphHealthDashboard(self.config.output_dir)
+        self.event_ledger = EventLedger(self.config.output_dir)
+        self.utility_scorer = KnowledgeUtilityScorer()
+        self.governor = GraphGovernor()
+        self.research_metrics = {
+            'health_history': [],
+            'utility_history': [],
+            'governor_adjustments': []
+        }
+
         self.logger.info("Enhanced simulation engine initialized")
     
     def _setup_logging(self):
@@ -3043,7 +3549,9 @@ class EnhancedSimulationEngine:
                     if enable_prune:
                         pruned = self.semantic_graph.prune_graph(t)
                     if enable_merge:
-                        merged = self.semantic_graph.merge_nearby_vertices()
+                        # RESEARCH-GRADE: Use Governor's adaptive merge threshold
+                        merge_threshold = self.governor.get_merge_threshold(base_threshold=0.05)
+                        merged = self.semantic_graph.merge_nearby_vertices(distance_threshold=merge_threshold)
                     if pruned > 0 or merged > 0:
                         self.logger.debug(f"Graph maintenance: pruned={pruned}, merged={merged}")
 
@@ -3194,6 +3702,12 @@ class EnhancedSimulationEngine:
                                 }
                                 self.plasticity.on_agent_death(agent, death_cause, conditions, t)
 
+                                # RESEARCH-GRADE: Log death to event ledger
+                                self.event_ledger.log_agent_death(
+                                    step, agent.id, death_cause,
+                                    agent.energy, agent.position
+                                )
+
                             # Update plasticity for active agents and apply modifiers
                             elif agent.state == "active":
                                 modifiers = self.plasticity.update_agent(agent, all_agents, self.config.dt)
@@ -3303,6 +3817,46 @@ class EnhancedSimulationEngine:
                     # Snapshot ledger for debugging
                     self.semantic_graph.snapshot_ledger(step)
 
+                # =================================================================
+                # RESEARCH-GRADE: Scientific Analysis (every 50 steps)
+                # =================================================================
+                if step % 50 == 0 and step > 0:
+                    # Compute graph health metrics
+                    health_metrics = self.health_dashboard.compute_metrics(
+                        self.semantic_graph.graph, self.agents, step
+                    )
+                    # Fill in queue metrics
+                    health_metrics['total_queue_backlog'] = self.semantic_graph.get_total_queue_length()
+                    health_metrics['max_queue_length'] = max(
+                        (self.semantic_graph.get_queue_length(v) for v in self.semantic_graph.graph.nodes()),
+                        default=0
+                    )
+                    self.research_metrics['health_history'].append(health_metrics)
+
+                    # Update Governor policies based on health
+                    adjustments = self.governor.update_policies(health_metrics, step)
+                    if adjustments:
+                        self.research_metrics['governor_adjustments'].append({
+                            'step': step, 'adjustments': adjustments
+                        })
+                        self.logger.debug(f"Governor adjustments: {adjustments}")
+
+                # Run knowledge utility query (every 100 steps - expensive)
+                if step % 100 == 0 and step > 0:
+                    utility_result = self.utility_scorer.run_query_task(
+                        self.semantic_graph.graph, self.agents, step
+                    )
+                    self.research_metrics['utility_history'].append(utility_result)
+
+                    # Log utility score
+                    utility = utility_result.get('utility', 0)
+                    if step % 500 == 0:
+                        self.logger.info(
+                            f"Knowledge Utility: {utility:.3f} "
+                            f"(retrieval={utility_result.get('retrieval_success', 0):.2f}, "
+                            f"freshness={utility_result.get('freshness', 0):.2f})"
+                        )
+
                 # Log
                 if step % 100 == 0:
                     self.logger.info(
@@ -3339,9 +3893,9 @@ class EnhancedSimulationEngine:
         self._save_results()
     
     def _save_results(self):
-        """Save enhanced results"""
+        """Save enhanced results including research-grade metrics"""
         report_path = Path(self.config.output_dir) / "enhanced_simulation_report.json"
-        
+
         report = {
             'config': {
                 'black_hole_mass': self.config.black_hole_mass,
@@ -3357,11 +3911,36 @@ class EnhancedSimulationEngine:
                 for colony, agents in self.agents.items()
             }
         }
-        
+
         with open(report_path, 'w') as f:
             json.dump(report, f, indent=2, default=lambda x: float(x) if isinstance(x, np.floating) else x)
-        
+
         self.logger.info(f"Enhanced report saved to {report_path}")
+
+        # RESEARCH-GRADE: Save scientific analysis outputs
+        # Save health dashboard history
+        self.health_dashboard.save_history()
+        self.logger.info(f"Graph health history saved ({len(self.health_dashboard.history)} records)")
+
+        # Save event ledger
+        self.event_ledger.save()
+        self.logger.info(f"Event ledger saved ({len(self.event_ledger.events)} events)")
+
+        # Save utility score history
+        utility_path = Path(self.config.output_dir) / "knowledge_utility_history.json"
+        with open(utility_path, 'w') as f:
+            json.dump(self.research_metrics['utility_history'], f, indent=2,
+                      default=lambda x: float(x) if isinstance(x, np.floating) else x)
+        self.logger.info(f"Knowledge utility history saved to {utility_path}")
+
+        # Save governor adjustment history
+        governor_path = Path(self.config.output_dir) / "governor_adjustments.json"
+        with open(governor_path, 'w') as f:
+            json.dump({
+                'final_policies': self.governor.policies,
+                'adjustments': self.research_metrics['governor_adjustments']
+            }, f, indent=2)
+        self.logger.info(f"Governor adjustments saved to {governor_path}")
 
 class LiveVisualizer:
     """
