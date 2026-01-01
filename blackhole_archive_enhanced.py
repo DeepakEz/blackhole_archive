@@ -452,7 +452,8 @@ class KnowledgeUtilityScorer:
 
         # Find shortest paths from all vertices to goal
         try:
-            paths = nx.single_target_shortest_path_length(graph, goal_vertex)
+            # FIX: NetworkX returns generator, convert to dict first
+            paths = dict(nx.single_target_shortest_path_length(graph, goal_vertex))
             reachable_count = len(paths)
             avg_path_length = np.mean(list(paths.values())) if paths else float('inf')
         except nx.NetworkXError:
@@ -3409,7 +3410,16 @@ class EnhancedSimulationEngine:
         # Write checkpoint
         checkpoint_path = checkpoint_dir / f"checkpoint_step_{step:06d}.json"
         with open(checkpoint_path, 'w') as f:
-            json.dump(checkpoint, f, indent=2)
+            # FIX: Handle numpy types in JSON serialization
+            def numpy_encoder(obj):
+                if isinstance(obj, (np.integer, np.int64, np.int32)):
+                    return int(obj)
+                elif isinstance(obj, (np.floating, np.float64, np.float32)):
+                    return float(obj)
+                elif isinstance(obj, np.ndarray):
+                    return obj.tolist()
+                raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
+            json.dump(checkpoint, f, indent=2, default=numpy_encoder)
 
         # Keep only last 3 checkpoints to save disk space
         checkpoints = sorted(checkpoint_dir.glob("checkpoint_step_*.json"))
