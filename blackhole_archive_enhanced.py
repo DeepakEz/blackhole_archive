@@ -3929,9 +3929,12 @@ class EnhancedSimulationEngine:
                     self.semantic_graph.snapshot_ledger(step)
 
                 # =================================================================
-                # RESEARCH-GRADE: Scientific Analysis (every 50 steps)
+                # RESEARCH-GRADE: Scientific Analysis (expensive - skip in fast mode)
                 # =================================================================
-                if step % 50 == 0 and step > 0:
+                skip_research = os.environ.get('SIM_FAST') or os.environ.get('SKIP_METRICS')
+                research_interval = 200 if skip_research else 50
+
+                if step % research_interval == 0 and step > 0 and not skip_research:
                     # Compute graph health metrics
                     health_metrics = self.health_dashboard.compute_metrics(
                         self.semantic_graph.graph, self.agents, step
@@ -3952,8 +3955,8 @@ class EnhancedSimulationEngine:
                         })
                         self.logger.debug(f"Governor adjustments: {adjustments}")
 
-                # Run knowledge utility query (every 100 steps - expensive)
-                if step % 100 == 0 and step > 0:
+                # Run knowledge utility query (every 100 steps - expensive, skip in fast mode)
+                if step % 100 == 0 and step > 0 and not skip_research:
                     utility_result = self.utility_scorer.run_query_task(
                         self.semantic_graph.graph, self.agents, step
                     )
