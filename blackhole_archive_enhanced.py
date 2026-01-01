@@ -193,6 +193,9 @@ class GraphHealthDashboard:
         }
 
         self.history.append(metrics)
+        # MEMORY FIX: Cap history to prevent unbounded growth
+        if len(self.history) > 1000:
+            self.history = self.history[-500:]
         return metrics
 
     def _empty_metrics(self, step: int) -> dict:
@@ -340,6 +343,9 @@ class EventLedger:
             'details': details or {}
         }
         self.events.append(event)
+        # MEMORY FIX: Cap events to prevent unbounded growth
+        if len(self.events) > 5000:
+            self.events = self.events[-2500:]
 
         # Track counts
         self.event_counts[event_type] = self.event_counts.get(event_type, 0) + 1
@@ -592,6 +598,9 @@ class GraphGovernor:
             }
         }
         self.adjustment_history.append(record)
+        # MEMORY FIX: Cap adjustment history
+        if len(self.adjustment_history) > 500:
+            self.adjustment_history = self.adjustment_history[-250:]
 
         return adjustments
 
@@ -1083,6 +1092,14 @@ class EnhancedSpacetime:
 
     def add_structural_field(self, position: np.ndarray, strength: float, radius: float):
         """Add beaver structural field with proper boundary handling"""
+        # INPUT VALIDATION: Prevent crashes from malformed input
+        if position is None or len(position) < 4:
+            return  # Silently skip invalid positions
+        if not np.all(np.isfinite(position)):
+            return  # Skip NaN/inf positions
+        if strength <= 0 or radius <= 0:
+            return  # Skip invalid parameters
+
         i = np.argmin(np.abs(self.r - position[1]))
         j = np.argmin(np.abs(self.theta - position[2]))
         k = np.argmin(np.abs(self.phi - position[3]))
