@@ -1635,11 +1635,24 @@ class EnhancedBeaverAgent(Agent):
     """Enhanced beaver with realistic construction and scarcity"""
 
     # Class-level material budget (shared across all beavers)
-    global_material_budget = 500.0  # Finite resources
+    # FIX: Increased from 500 → 2000 and added regeneration for soft constraints
+    global_material_budget = 2000.0  # Increased finite resources
+    MATERIAL_BUDGET_MAX = 2000.0     # Cap for regeneration
+    MATERIAL_REGEN_RATE = 0.5        # Materials regenerated per timestep (foraging)
 
     # Sigmoid cap parameters for productivity scaling
     SIGMOID_ALPHA = 0.3  # Maximum productivity bonus
     SIGMOID_K = 2.0  # Steepness of sigmoid curve
+
+    @classmethod
+    def regenerate_materials(cls, dt: float):
+        """
+        Regenerate global materials over time (foraging/harvesting analog).
+        Called from simulation loop to enable sustainable construction.
+        """
+        regen = cls.MATERIAL_REGEN_RATE * dt
+        cls.global_material_budget = min(cls.MATERIAL_BUDGET_MAX,
+                                          cls.global_material_budget + regen)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -1666,13 +1679,23 @@ class EnhancedBeaverAgent(Agent):
         if self.construction_cooldown > 0:
             self.construction_cooldown -= dt
 
-        # ENERGY REGENERATION: Beavers gain energy from structural field (territory maintenance)
-        # Biological analog: beavers benefit from infrastructure they've built
+        # ENERGY REGENERATION: Beavers gain energy from multiple sources
+        # FIX: Increased regeneration to prevent colony extinction
         local_structure = spacetime.get_structural_field_at(self.position)
-        structure_gain = dt * 0.003 * local_structure  # Energy from maintained structures
         curvature = spacetime.get_curvature(self.position)
-        curvature_gain = dt * 0.002 * min(curvature, 1.0)  # Bonus from high-curvature regions
-        self.energy = min(1.5, self.energy + structure_gain + curvature_gain)
+
+        # 1. Structure maintenance bonus (beavers benefit from existing infrastructure)
+        structure_gain = dt * 0.008 * local_structure  # Increased from 0.003
+
+        # 2. Curvature exploration bonus (reward for reaching high-curvature regions)
+        curvature_gain = dt * 0.005 * min(curvature, 1.0)  # Increased from 0.002
+
+        # 3. BASE FORAGING: Passive energy recovery even without structures
+        # This prevents death spiral when no structures exist yet
+        base_forage = dt * 0.003  # Baseline survival energy
+
+        total_regen = structure_gain + curvature_gain + base_forage
+        self.energy = min(1.5, self.energy + total_regen)
 
         # Check curvature using Kretschmann-based tidal strength (not Ricci which is 0 in vacuum)
         # get_curvature() returns sqrt(K) where K = 48M²/r⁶ for Schwarzschild
@@ -1836,10 +1859,11 @@ class EnhancedAntAgent(Agent):
             # If budget exceeded, force attachment to existing vertex
             budget_exceeded = self.vertices_created >= self.MAX_VERTICES_PER_ANT
 
-            # CREATIVITY FACTOR: 30% chance to create new vertex even if nearby exists
-            # This encourages exploration and diverse graph structure for emergent intelligence
+            # CREATIVITY FACTOR: 5% chance to create new vertex even if nearby exists
+            # BALANCED: Reduced from 30% → 5% to match merge throttling (grace period)
+            # Without this reduction, vertex count explodes when merging is restricted
             # BUT: Disabled if budget exceeded
-            force_create = (not budget_exceeded) and (np.random.random() < 0.30)
+            force_create = (not budget_exceeded) and (np.random.random() < 0.05)
 
             if nearby_vertex is not None and (not force_create or budget_exceeded):
                 # Attach to existing vertex instead of creating new one
@@ -1875,12 +1899,15 @@ class EnhancedAntAgent(Agent):
                 self.discovery_times[vertex_id] = current_time
 
                 # Generate packet when discovering salient vertex
-                if info_density > 0.35:  # Moderate threshold for packet generation
+                # FIX: Lowered threshold from 0.35 → 0.10 to enable earlier transport
+                # Also: probabilistic packet generation for low-density discoveries
+                packet_prob = min(1.0, info_density * 3.0)  # Higher density = higher prob
+                if info_density > 0.10 or (info_density > 0.05 and np.random.random() < 0.3):
                     packet = {
                         'content': f"discovery_{vertex_id}",
                         'salience': info_density,
                         'confidence': min(1.0, info_density + 0.2),
-                        'created_at': 0.0,  # Would use simulation time
+                        'created_at': current_time,  # FIX: Use actual simulation time
                         'ttl': 50.0,  # FIX #4: Packet time-to-live
                         'source_agent': self.id,
                         'source_vertex': vertex_id
@@ -2182,9 +2209,16 @@ class EnhancedBeeAgent(Agent, ActiveInferenceMixin):
 
         if self.role == "scout":
             # TRANSPORT GATING: Check if semantic graph is mature enough for transport
-            # Uses adaptive thresholds based on bootstrap phase
-            if not semantic_graph.is_transport_ready(current_time):
-                # Graph not mature - wait for structure to develop
+            # FIX: Early transport mode - allow low-bandwidth transport even with minimal structure
+            transport_ready = semantic_graph.is_transport_ready(current_time)
+            has_any_packets = semantic_graph.get_total_queue_length() > 0
+
+            # EARLY TRANSPORT MODE: If packets exist, allow transport even if graph not "mature"
+            # This prevents bees from sitting idle while packets pile up
+            early_transport_allowed = has_any_packets and semantic_graph.graph.number_of_nodes() >= 5
+
+            if not transport_ready and not early_transport_allowed:
+                # Graph not mature and no packets - wait for structure to develop
                 # Just random walk to reduce energy consumption
                 random_step = 0.02 * np.random.randn(4)
                 exploration_velocity = self.velocity + random_step / (dt + 1e-6)
@@ -2196,7 +2230,8 @@ class EnhancedBeeAgent(Agent, ActiveInferenceMixin):
                 return
 
             # FIX #3: Find vertices with packets waiting (not just high salience)
-            if np.random.rand() < 0.1:  # Check more frequently
+            # FIX: Increased check frequency from 0.1 → 0.2 for faster response
+            if np.random.rand() < 0.2:  # Check more frequently
                 vertices = list(semantic_graph.graph.nodes())
                 if vertices:
                     # Prioritize vertices with packets AND high salience
@@ -2307,6 +2342,11 @@ class SemanticGraph:
     BOOTSTRAP_EDGE_PROB_MULTIPLIER = 5.0  # Higher edge probability during bootstrap
     VERTEX_GRACE_PERIOD = 30.0  # New vertices protected from pruning (increased from 20)
     MIN_STABLE_VERTICES = 100  # Minimum vertices to maintain
+
+    # FIX: Merge throttling to prevent "shredding the mind"
+    MERGE_BUDGET_PCT = 0.03     # Max 3% of alive vertices can be merged per step
+    MERGE_GRACE_PERIOD = 50.0   # Newborn vertices immune to merge for this duration
+    MAX_EDGES_PER_VERTEX = 64   # Cap edges to prevent near-clique explosion
 
     def __init__(self):
         self.graph = nx.DiGraph()
@@ -2546,27 +2586,65 @@ class SemanticGraph:
         return len(self.packet_queues.get(vertex_id, []))
     
     def add_edge(self, v1: int, v2: int, pheromone: float):
-        """Add edge with pheromone"""
+        """Add edge with pheromone, enforcing per-vertex edge cap"""
         if not self.graph.has_edge(v1, v2):
+            # FIX: Enforce edge cap before adding new edge
+            out_degree = self.graph.out_degree(v1)
+            if out_degree >= self.MAX_EDGES_PER_VERTEX:
+                # At capacity - prune weakest outgoing edge first
+                self._prune_weakest_edge(v1, direction='out')
+
             self.graph.add_edge(v1, v2)
-        
+
         key = (v1, v2)
         if key not in self.pheromones:
             self.pheromones[key] = 0.0
         self.pheromones[key] += pheromone
-    
+
+    def _prune_weakest_edge(self, vertex: int, direction: str = 'out'):
+        """Remove the weakest edge from a vertex to make room for new connections."""
+        if direction == 'out':
+            edges = list(self.graph.out_edges(vertex))
+        else:
+            edges = list(self.graph.in_edges(vertex))
+
+        if not edges:
+            return
+
+        # Find edge with lowest pheromone
+        weakest_edge = None
+        weakest_pheromone = float('inf')
+        for edge in edges:
+            p = self.pheromones.get(edge, 0.0)
+            if p < weakest_pheromone:
+                weakest_pheromone = p
+                weakest_edge = edge
+
+        if weakest_edge:
+            self.graph.remove_edge(*weakest_edge)
+            if weakest_edge in self.pheromones:
+                del self.pheromones[weakest_edge]
+
     def get_pheromone(self, edge: Tuple[int, int]) -> float:
         """Get pheromone strength on edge"""
         return self.pheromones.get(edge, 0.0)
-    
+
     def decay_pheromones(self, dt: float, decay_rate: float = 0.1):
-        """Decay all pheromones"""
+        """Decay all pheromones and remove weak edges"""
+        edges_to_remove = []
         for edge in list(self.pheromones.keys()):
             self.pheromones[edge] *= np.exp(-decay_rate * dt)
 
             # Remove if too weak
             if self.pheromones[edge] < 0.01:
                 del self.pheromones[edge]
+                edges_to_remove.append(edge)
+
+        # FIX: Also remove edges from graph when pheromone decays to zero
+        # This prevents edge explosion from unreinforced connections
+        for edge in edges_to_remove:
+            if self.graph.has_edge(*edge):
+                self.graph.remove_edge(*edge)
 
     def prune_graph(self, current_time: float, max_age: float = 80.0, min_vertices: int = None):
         """
@@ -2637,7 +2715,7 @@ class SemanticGraph:
 
         return len(vertices_to_remove)
 
-    def merge_nearby_vertices(self, distance_threshold: float = 0.05):
+    def merge_nearby_vertices(self, distance_threshold: float = 0.05, current_time: float = None):
         """
         FIX #6: Merge vertices that are spatially close.
         Prevents unbounded growth from redundant beliefs.
@@ -2648,8 +2726,10 @@ class SemanticGraph:
           - threshold=0.3: only 115 vertices at step 100 (606 merges!)
         0.3 was still too aggressive. 0.05 should only catch true duplicates.
 
-        ADDITIONAL CRITERIA: Also require salience similarity (within 0.3) to merge.
-        This prevents merging semantically distinct vertices that happen to be near.
+        ADDITIONAL CRITERIA:
+        - Salience similarity (within 0.3) to merge
+        - MERGE_BUDGET_PCT: Max % of vertices that can be merged per call
+        - MERGE_GRACE_PERIOD: Newborn vertices immune to merge
 
         OPTIMIZED: Uses scipy KD-tree for O(V log V) instead of O(V²) neighbor search.
 
@@ -2659,12 +2739,16 @@ class SemanticGraph:
 
         merged_count = 0
         vertices = list(self.graph.nodes())
+        n_vertices = self.graph.number_of_nodes()
 
         # CRITICAL: Don't merge if already at or below minimum
-        if self.graph.number_of_nodes() <= self.MIN_STABLE_VERTICES:
+        if n_vertices <= self.MIN_STABLE_VERTICES:
             return 0
 
-        # Build position and salience arrays
+        # FIX: Merge budget - max vertices to merge this call
+        merge_budget = max(1, int(n_vertices * self.MERGE_BUDGET_PCT))
+
+        # Build position and salience arrays, respecting grace period
         valid_vertices = []
         positions = []
         saliences = []
@@ -2677,6 +2761,13 @@ class SemanticGraph:
             pos = self.graph.nodes[v]['position']
             if len(pos) < 4:
                 continue
+
+            # FIX: Grace period - skip newborn vertices
+            if current_time is not None and v in self.vertex_creation_times:
+                age = current_time - self.vertex_creation_times[v]
+                if age < self.MERGE_GRACE_PERIOD:
+                    continue  # Protected from merge
+
             valid_vertices.append(v)
             positions.append(pos[1:4])  # Spatial only (r, theta, phi)
             saliences.append(self.graph.nodes[v].get('salience', 0.5))
@@ -2695,6 +2786,10 @@ class SemanticGraph:
         merged_into = {}  # v2 -> v1 (v2 merged into v1)
 
         for i, j in pairs:
+            # FIX: Respect merge budget
+            if len(merged_into) >= merge_budget:
+                break
+
             v1, v2 = valid_vertices[i], valid_vertices[j]
 
             # Skip if either already merged
@@ -3480,6 +3575,9 @@ class EnhancedSimulationEngine:
                     if beaver.state == "active":
                         beaver.update(self.config.dt, self.spacetime, self.semantic_graph)
 
+                # FIX: Regenerate global materials (soft constraint instead of hard cap)
+                EnhancedBeaverAgent.regenerate_materials(self.config.dt)
+
                 for ant in self.agents['ants']:
                     if ant.state == "active":
                         ant.update(self.config.dt, self.spacetime, self.semantic_graph, current_time=t)
@@ -3551,7 +3649,10 @@ class EnhancedSimulationEngine:
                     if enable_merge:
                         # RESEARCH-GRADE: Use Governor's adaptive merge threshold
                         merge_threshold = self.governor.get_merge_threshold(base_threshold=0.05)
-                        merged = self.semantic_graph.merge_nearby_vertices(distance_threshold=merge_threshold)
+                        # FIX: Pass current_time for grace period protection
+                        merged = self.semantic_graph.merge_nearby_vertices(
+                            distance_threshold=merge_threshold, current_time=t
+                        )
                     if pruned > 0 or merged > 0:
                         self.logger.debug(f"Graph maintenance: pruned={pruned}, merged={merged}")
 
