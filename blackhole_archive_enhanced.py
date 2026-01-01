@@ -47,9 +47,13 @@ import uuid
 # Note: Full Lyapunov stability monitoring requires epistemic layer
 # (available in blackhole_archive_production.py with --engine production)
 
-# Import base classes
+# Import base classes - use relative imports, not hardcoded paths
 import sys
-sys.path.append('/mnt/user-data/outputs')
+import os
+# Allow optional module path via environment variable (no hardcoded paths)
+_extra_path = os.environ.get('BLACKHOLE_MODULE_PATH')
+if _extra_path and _extra_path not in sys.path:
+    sys.path.append(_extra_path)
 
 # Import epistemic cognitive layer for Overmind integration
 try:
@@ -189,6 +193,9 @@ class GraphHealthDashboard:
         }
 
         self.history.append(metrics)
+        # MEMORY FIX: Cap history to prevent unbounded growth
+        if len(self.history) > 1000:
+            self.history = self.history[-500:]
         return metrics
 
     def _empty_metrics(self, step: int) -> dict:
@@ -336,6 +343,9 @@ class EventLedger:
             'details': details or {}
         }
         self.events.append(event)
+        # MEMORY FIX: Cap events to prevent unbounded growth
+        if len(self.events) > 5000:
+            self.events = self.events[-2500:]
 
         # Track counts
         self.event_counts[event_type] = self.event_counts.get(event_type, 0) + 1
@@ -588,6 +598,9 @@ class GraphGovernor:
             }
         }
         self.adjustment_history.append(record)
+        # MEMORY FIX: Cap adjustment history
+        if len(self.adjustment_history) > 500:
+            self.adjustment_history = self.adjustment_history[-250:]
 
         return adjustments
 
@@ -1079,6 +1092,14 @@ class EnhancedSpacetime:
 
     def add_structural_field(self, position: np.ndarray, strength: float, radius: float):
         """Add beaver structural field with proper boundary handling"""
+        # INPUT VALIDATION: Prevent crashes from malformed input
+        if position is None or len(position) < 4:
+            return  # Silently skip invalid positions
+        if not np.all(np.isfinite(position)):
+            return  # Skip NaN/inf positions
+        if strength <= 0 or radius <= 0:
+            return  # Skip invalid parameters
+
         i = np.argmin(np.abs(self.r - position[1]))
         j = np.argmin(np.abs(self.theta - position[2]))
         k = np.argmin(np.abs(self.phi - position[3]))
@@ -2199,9 +2220,11 @@ class EnhancedBeeAgent(Agent, ActiveInferenceMixin):
         observation = self._get_observation(spacetime, self.position)
         self.update_beliefs(observation)
 
-        # Track free energy for learning
+        # Track free energy for learning (capped to prevent memory leak)
         current_F = self.compute_free_energy(observation)
         self.free_energy_history.append(current_F)
+        if len(self.free_energy_history) > 100:
+            self.free_energy_history.pop(0)
 
         # Adapt epistemic drive based on free energy trend
         # High free energy = world is surprising = increase exploration
@@ -3920,12 +3943,19 @@ class EnhancedSimulationEngine:
                         self.consecutive_violations = 0
                 self.last_energy = current_energy
                 self.stability_history.append(is_stable)
+                # MEMORY FIX: Cap stability history to prevent unbounded growth
+                if len(self.stability_history) > 1000:
+                    self.stability_history = self.stability_history[-500:]
 
-                # Record history
+                # Record history (capped to prevent memory leaks)
                 if step % 10 == 0:
                     self.stats['energy_history'].append(self.stats['total_energy'])
                     self.stats['vertices_history'].append(self.stats['n_vertices'])
                     self.stats['structures_history'].append(self.stats['n_structures_built'])
+                    # Cap history arrays at 1000 entries
+                    for key in ['energy_history', 'vertices_history', 'structures_history', 'stability_rate']:
+                        if key in self.stats and len(self.stats[key]) > 1000:
+                            self.stats[key] = self.stats[key][-500:]
                     stable_count = sum(1 for s in self.stability_history if s)
                     self.stats['stability_rate'].append(stable_count / max(1, len(self.stability_history)))
 
@@ -4102,9 +4132,12 @@ class LiveVisualizer:
         if not self.initialized:
             self.setup()
 
-        # Clear all axes
+        # MEMORY FIX: Clear axes properly and remove any twin axes
         for ax in self.axes.flat:
             ax.clear()
+            # Remove any twin axes to prevent memory leak
+            for child_ax in ax.child_axes:
+                child_ax.remove()
 
         # ===== Agent Positions (r-theta polar projection) =====
         self.ax_space.set_title(f'Agent Positions (Step {step})')
@@ -4180,6 +4213,12 @@ class LiveVisualizer:
         self.time_history.append(t)
         self.energy_history.append(total_energy)
         self.vertex_history.append(n_vertices)
+        # MEMORY FIX: Cap visualization history to prevent leak
+        max_history = 500
+        if len(self.time_history) > max_history:
+            self.time_history = self.time_history[-max_history:]
+            self.energy_history = self.energy_history[-max_history:]
+            self.vertex_history = self.vertex_history[-max_history:]
 
         self.ax_energy.set_title('System State Over Time')
         self.ax_energy.plot(self.time_history, self.energy_history, 'b-', label='Energy')
