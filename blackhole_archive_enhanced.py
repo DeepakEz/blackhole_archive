@@ -1859,10 +1859,11 @@ class EnhancedAntAgent(Agent):
             # If budget exceeded, force attachment to existing vertex
             budget_exceeded = self.vertices_created >= self.MAX_VERTICES_PER_ANT
 
-            # CREATIVITY FACTOR: 30% chance to create new vertex even if nearby exists
-            # This encourages exploration and diverse graph structure for emergent intelligence
+            # CREATIVITY FACTOR: 5% chance to create new vertex even if nearby exists
+            # BALANCED: Reduced from 30% → 5% to match merge throttling (grace period)
+            # Without this reduction, vertex count explodes when merging is restricted
             # BUT: Disabled if budget exceeded
-            force_create = (not budget_exceeded) and (np.random.random() < 0.30)
+            force_create = (not budget_exceeded) and (np.random.random() < 0.05)
 
             if nearby_vertex is not None and (not force_create or budget_exceeded):
                 # Attach to existing vertex instead of creating new one
